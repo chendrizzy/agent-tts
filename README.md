@@ -128,6 +128,7 @@ engine additionally needs an `mlx-audio` interpreter pointed to by `$MLX_PYTHON`
 | `/tts:log` | Replay what the daemon has actually spoken — newest first, with timestamps + category (read-only) |
 | `/tts:doctor` | Disk, daemon/socket, deps, backend reachability — PASS/WARN + fixes |
 | `/tts:voice` | Pick a speech engine and voice, then restart to apply |
+| `/tts:config` | View or change any setting by key, with validation, then restart to apply |
 | `/tts:uninstall` | Stop and remove the service/daemon (optionally the config) |
 
 ## Requirements
@@ -253,7 +254,7 @@ daemon/              the daemon — socket server, router, async pipeline, seams
   platforms/           OS seam: launchd · systemd · audio players
   spoken_log.py        bounded per-session JSONL of what was actually spoken
 hooks/               Claude Code hook scripts + hooks.json registry (+ cursor-* wrappers)
-commands/            slash commands (/tts:setup, status, doctor, voice, log, uninstall)
+commands/            slash commands (/tts:setup, status, doctor, voice, config, log, uninstall)
 skills/tts-setup/    the first-run setup procedure
 scripts/             calibration, manifest sync, the demo generators
 tests/               the `make verify` gate + fixtures (spoken & event corpora)

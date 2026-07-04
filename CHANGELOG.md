@@ -6,6 +6,14 @@ All notable changes to claude-tts are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+- `/tts:config` — view or change any setting by dotted key
+  (`/tts:config summarizer.soft_tokens 220`), with validation against each key's
+  own `_options`/`_range`/type hints and a `config.json.bak` backup before
+  writing. Restarts the daemon to apply, except changes confined to
+  `feature_flags` (re-read per request, no restart). Complements `/tts:voice`,
+  which stays the friendlier path for `voice.engine`/`voice.name`.
+
 ## [0.1.6] — 2026-06-26
 
 ### Fixed

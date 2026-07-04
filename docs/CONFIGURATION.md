@@ -14,9 +14,10 @@ Resolution order (`daemon/paths.py`):
 2. otherwise `$XDG_CONFIG_HOME/claude-tts/config.json`, defaulting to
    `~/.config/claude-tts/config.json`.
 
-`/tts:setup` writes this file; `/tts:voice` edits the `voice` block in place. The
-directory is created `0700` and the file `0600` (owner-only) — it may hold an
-API key, so it is never world-readable.
+`/tts:setup` writes this file; `/tts:voice` edits the `voice` block in place, and
+`/tts:config` views or edits any block by key (with validation). The directory is
+created `0700` and the file `0600` (owner-only) — it may hold an API key, so it is
+never world-readable.
 
 ## The blocks
 

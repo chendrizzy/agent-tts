@@ -1,6 +1,6 @@
 """Deterministic gate for the claude-tts plugin shell.
 
-Validates the Claude Code plugin manifests, the five slash commands, the
+Validates the Claude Code plugin manifests, the slash commands, the
 tts-setup skill stub, public-PII cleanliness of every new shell file, and the
 portability of the (pre-existing) hooks wiring. All-sync, no conftest, no
 async — part of the `make verify` gate.
@@ -41,7 +41,7 @@ def test_marketplace_json_is_valid_and_consistent():
 
 COMMANDS_DIR = ROOT / "commands"
 SKILL_MD = ROOT / "skills" / "tts-setup" / "SKILL.md"
-COMMAND_NAMES = ("setup", "voice", "status", "doctor", "uninstall")
+COMMAND_NAMES = ("setup", "voice", "status", "doctor", "log", "config", "uninstall")
 
 
 def _frontmatter(text):
@@ -61,7 +61,7 @@ def _frontmatter(text):
     return ""  # no closing fence
 
 
-def test_all_five_commands_exist_with_frontmatter():
+def test_all_commands_exist_with_frontmatter():
     for name in COMMAND_NAMES:
         md = COMMANDS_DIR / f"{name}.md"
         assert md.is_file(), f"missing command {md}"
@@ -98,7 +98,7 @@ PII_FORBIDDEN = (
     "mlx_python",         # personal mlx interpreter path
 )
 
-# Every NEW shell file 3b introduces.
+# Every shell file the plugin ships, PII-scanned. Add a file = add a line.
 NEW_SHELL_FILES = (
     PLUGIN_JSON,
     MARKETPLACE_JSON,
@@ -106,6 +106,7 @@ NEW_SHELL_FILES = (
     COMMANDS_DIR / "voice.md",
     COMMANDS_DIR / "status.md",
     COMMANDS_DIR / "doctor.md",
+    COMMANDS_DIR / "config.md",
     COMMANDS_DIR / "uninstall.md",
     SKILL_MD,
 )
