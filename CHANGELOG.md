@@ -6,6 +6,35 @@ All notable changes to claude-tts are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-08-17
+
+### Added
+- `output_context` (opt-in) — name the project in spoken output when it adds
+  value: first mention, a project switch, an error, or a re-anchor after
+  `reanchor_gap_s` of quiet. A deterministic gate decides *whether* to name it,
+  so it does not prefix every line. Complements `project_voices`: voices
+  distinguish repos by sound, this names them in words.
+- `speech_selection` (opt-in) — deterministic, substance-preserving selection
+  on the turn-summary path, replacing the LLM's salience judgement. Blocks are
+  scored (blockquotes weighted up, bare headings down, pure test/build telemetry
+  dropped) and the highest-substance ones kept within a char budget,
+  sentence-aware, with any trailing question spoken last. No LLM call, no
+  network, same input → same speech. Fixes over-condensation dropping
+  blockquoted deliverables while keeping filler.
+
+Both ship OFF; with them off the pipeline is byte-identical (the gate holds at
+the same count with the feature code present but disabled).
+
+### Fixed
+- Per-project voices did not apply to events without a `cwd` — which is the
+  stop/prose path, i.e. the turn-final speech you actually hear.
+  `ContentRouter._project_for_event` falls back to
+  `spoken_log.get_session_cwd()`, but that accessor did not exist in this repo,
+  so the call raised `AttributeError` into a best-effort `except` and silently
+  resolved to no project. The daemon was recording the session cwd the whole
+  time; nothing could read it back. Added the accessor and a regression test —
+  the swallowing `except` means only a test can catch this class of bug.
+
 ### Changed
 - Releases now quote this file. `release.yml` built its notes with
   `gh release create --generate-notes`, which lists merged PRs since the last

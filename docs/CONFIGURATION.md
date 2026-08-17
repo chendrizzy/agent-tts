@@ -51,6 +51,38 @@ plugin, so only those engines can enforce per-project gender policy. With `say`,
 `espeak`, or `voicebox`, setup keeps `project_voices.enabled=false` and uses the
 shared `voice.name`.
 
+### `output_context` — name the project in words
+| Key | Default | Notes |
+|-----|---------|-------|
+| `enabled` | `false` | `true` = weave project/artifact/intent into spoken output when it adds value |
+| `reanchor_gap_s` | `90` | re-name the current project after this many seconds since it was **last named**, even without a switch; `0` = name only on first mention, project switch, or `ERROR` |
+
+One daemon narrating several repos otherwise gives you no way to tell which one
+just spoke. A deterministic gate decides *whether* to name the project — first
+mention, a switch, an error, or a re-anchor after quiet — so it stays quiet
+rather than prefixing every line. This is **independent of `project_voices`**:
+voices distinguish projects by *sound*, `output_context` names them in *words*.
+Enable either, both, or neither. Read at daemon start; restart to apply.
+
+### `speech_selection` — pick what to speak without the LLM
+| Key | Default | Notes |
+|-----|---------|-------|
+| `enabled` | `false` | `true` = deterministic selection replaces the LLM on the turn-summary path |
+| `max_speech_duration_chars` | `400` | substance budget; a trailing question/CTA is appended on top and never starved |
+| `max_list_items_to_speak` | `3` | speak the first N list items, then "and X more." |
+| `max_heading_level` | `2` | drop deeper headings — they are navigational, not substance |
+| `inline_code_max_chars` | `24` | reserved; `normalize_for_speech` already unwraps inline code |
+| `cta_search_limit_chars` | `240` | max spoken length of the trailing question, and how far back to look for one |
+
+When the summarizer condenses a turn it is asking a small model to judge
+salience, and it would sometimes drop the thing that mattered — a blockquoted
+deliverable — while keeping filler. With this on, salience is decided by
+scoring the message's own blocks (blockquotes weighted up, bare headings down,
+pure test/build telemetry dropped) and keeping the highest-substance ones within
+the budget, sentence-aware. **No LLM call, no network, deterministic** — the
+same input always produces the same speech. Off by default, in which case the
+pipeline is byte-identical to the LLM path.
+
 ### `llm_provider` — the judge/summarize brain
 | Key | Default | Notes |
 |-----|---------|-------|

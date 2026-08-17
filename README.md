@@ -152,7 +152,18 @@ and edit. Every block is optional; the daemon embeds safe defaults. Common knobs
 `project_voices.gender_preference`, `llm_provider.type`, `summarizer.model`, and
 `filtering.max_response_length`. Per-project and gender-aware assignment is
 enforced for `edge-tts` and `kokoro`; system/Voicebox engines use the shared
-`voice.name`. Full reference, defaults, and environment variables:
+`voice.name`.
+
+Two opt-in blocks are worth knowing about when one daemon narrates several
+repos. **`output_context.enabled`** names the project in words when it adds
+value — first mention, a switch, an error, or after a quiet spell — so it
+complements `project_voices`, which distinguishes them by sound.
+**`speech_selection.enabled`** replaces the LLM on the turn-summary path with
+deterministic block scoring, so salience never depends on a small model's
+judgement (it used to drop blockquoted deliverables and keep filler). Both ship
+OFF, and with them off the pipeline is byte-identical to before.
+
+Full reference, defaults, and environment variables:
 **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**.
 
 ## Spoken-output log & statusline

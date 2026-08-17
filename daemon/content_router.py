@@ -39,6 +39,7 @@ from collections import deque
 from dataclasses import replace
 from typing import Any, Optional, TYPE_CHECKING
 
+from daemon.text_utils import normalize_for_speech, is_speakable
 from daemon.tts_types import (
     Category,
     RouterDecision,
@@ -335,6 +336,29 @@ def _tail_hash(text: str) -> str:
 # Bash tool result whenever the command ran from a cwd that differs from the
 # session cwd. It carries zero spoken value, but it rode in on the *tail* of
 # otherwise-varying stdout, so whole-content dedupe never caught the repeats.
+# ----- speech_selection selector patterns/weights (G002) ------------------
+# Used only by the deterministic substance-preserving selector, gated behind
+# speech_selection.enabled (default OFF). Block-shape detection is a cheap
+# leading-marker scan (NOT a CommonMark parse); markup->speech is delegated to
+# the shipped normalize_for_speech. Kept module-level so they compile once.
+_SEL_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
+_SEL_WORD_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z'-]{1,}")
+_SEL_BLOCKQUOTE_LINE_RE = re.compile(r"^\s{0,3}>\s?")
+_SEL_BULLET_LINE_RE = re.compile(r"^\s*[-*+]\s+")
+_SEL_NUMLIST_LINE_RE = re.compile(r"^\s*\d{1,2}[.)]\s+")
+_SEL_HEADING_LINE_RE = re.compile(r"^\s{0,3}(#{1,6})\s+")
+# Substance weight per block type: a blockquote is author-emphasized (the
+# highlighted deliverable/quote), so it outranks equal-length prose; a bare
+# heading is navigational, so it is deprioritized. Paragraphs/lists are neutral.
+_SEL_TYPE_WEIGHT = {"blockquote": 1.6, "paragraph": 1.0, "list": 1.0, "heading": 0.4}
+# Tokens that are pure test/build-telemetry vocabulary — a block made only of
+# these (plus counts) is low-value per the plan's PURPOSE (bare "N passed" noise).
+_SEL_COUNT_WORDS = frozenset({
+    "passed", "failed", "skipped", "error", "errors", "warning", "warnings",
+    "compiled", "build", "succeeded", "complete", "suite", "test", "tests", "full",
+})
+
+
 _HARNESS_NOISE_RE = re.compile(r"^[ \t]*Shell cwd was reset to\b.*$", re.MULTILINE)
 
 
@@ -438,6 +462,48 @@ class ContentRouter:
         # this, route() collapses every skip to None and the *why* (drop-check
         # vs backpressure vs dedup) is unrecoverable from the log.
         self._last_drop_reason: str = ""
+
+        # ---- output_context (project/artifact/intent weaving) ----
+        # Master gate (default OFF). When False, _apply_output_context is never
+        # called and self._last_spoken_project stays "" — the pipeline output is
+        # byte-identical to pre-feature behavior (the 0%-leak invariant).
+        oc_cfg = self.config.get("output_context", {}) if isinstance(self.config, dict) else {}
+        self._output_context_enabled = bool(oc_cfg.get("enabled", False))
+        # Context-switch state for the C2 project gate. Single asyncio instance
+        # drives route(), so this needs no lock (# ponytail: single-thread; add a
+        # lock only if the router ever fans out across threads).
+        self._last_spoken_project: str = ""
+        # Re-anchor lenience: name a project again after this many seconds since
+        # IT was last NAMED, even without a switch — a repeat after a quiet spell
+        # re-orients the listener without feeling noisy. 0 disables (name only on
+        # first mention or ERROR). Monotonic clock so wall-clock changes can't
+        # skew it; _clock is injectable for tests.
+        self._reanchor_gap_s: float = float(oc_cfg.get("reanchor_gap_s", 90.0))
+        # PART-B (2026-07-04): PER-PROJECT last-named timestamps, replacing the
+        # single global "_last_project_ts". The old global tracker THRASHED under
+        # concurrent interleaving (multiple sessions on one audio stream): A names
+        # → B names (resets the one clock) → A names again saw a stale/other-owned
+        # clock, so it either re-announced A moments after A spoke, or starved A's
+        # re-anchor. Keying the clock by project makes the gate concurrency-correct
+        # — a project is re-announced only when THAT project has been quiet for
+        # reanchor_gap_s, never because a different project spoke in between.
+        self._project_last_named_ts: dict[str, float] = {}
+        self._clock = time.monotonic
+        self._introduced_projects: set = set()
+
+        # ---- speech_selection (deterministic substance-preserving selector, G002) ----
+        # Master gate (default OFF). When False, route() takes the untouched qwen
+        # summarize() path, so the flag-OFF pipeline is byte-identical to today
+        # (preserves the LIVE daemon + the 0%-markup-leak invariant). When True,
+        # the needs_summarization branch uses _select_spoken_text instead of the
+        # LLM — deterministic, NO LLM in the selection path.
+        ss_cfg = self.config.get("speech_selection", {}) if isinstance(self.config, dict) else {}
+        self._speech_selection_enabled = bool(ss_cfg.get("enabled", False))
+        self._sel_max_chars = int(ss_cfg.get("max_speech_duration_chars", 400))
+        self._sel_max_list_items = int(ss_cfg.get("max_list_items_to_speak", 3))
+        self._sel_max_heading_level = int(ss_cfg.get("max_heading_level", 2))
+        self._sel_inline_code_max = int(ss_cfg.get("inline_code_max_chars", 24))
+        self._sel_cta_search_limit = int(ss_cfg.get("cta_search_limit_chars", 240))
 
         pv_cfg = self.config.get("project_voices", {}) if isinstance(self.config, dict) else {}
         self._project_voices_enabled = bool(pv_cfg.get("enabled", False))
@@ -599,8 +665,23 @@ class ContentRouter:
 
         decision = self._apply_project_voice(decision, event)
 
+        # Weave project/artifact/intent context (gated; OFF => no-op, unchanged).
+        # Must run BEFORE _maybe_summarize so context_hint enrichment reaches the
+        # LLM on the summarized path.
+        if self._output_context_enabled:
+            decision = self._apply_output_context(decision, event)
+
         if decision.needs_summarization:
-            decision = await self._maybe_summarize(decision)
+            if self._speech_selection_enabled:
+                # Deterministic substance-preserving selection INSTEAD of the LLM
+                # (G002). No LLM, no I/O — the selected text flows through the
+                # same downstream R1 normalization as any other content.
+                selected = self._select_spoken_text(decision.content)
+                decision = replace(
+                    decision, content=selected, needs_summarization=False
+                )
+            else:
+                decision = await self._maybe_summarize(decision)
 
         session_id = event.get("session_id") or "default"
         return RoutedItem(decision=decision, session_id=session_id)
@@ -1467,6 +1548,336 @@ class ContentRouter:
             return None
         idx = int(hashlib.sha256(proj.encode("utf-8")).hexdigest(), 16) % len(self._project_voice_pool)
         return self._project_voice_pool[idx]
+
+    _NEEDS_INPUT_RE = re.compile(
+        r"\b(?:let me know|should i|would you like|need your (?:input|call)|"
+        r"your call|shall i|do you want|waiting for)\b",
+        re.IGNORECASE,
+    )
+    _PROCEEDING_RE = re.compile(
+        r"\b(?:i'll|let me|going to|about to)\b[^.?!]*\b"
+        r"(?:fix|update|apply|implement|add|change|refactor|patch|correct)\w*",
+        re.IGNORECASE,
+    )
+    _PROCEEDING_SIMPLE_RE = re.compile(r"\b(?:fixing now|applying)\b", re.IGNORECASE)
+
+    @classmethod
+    def _intent_marker(cls, content: str, category: Category) -> Optional[str]:
+        """Deterministic intent classifier for PROSE turns only. Returns
+        "needs_input" | "proceeding" | None. Conservative and order-sensitive:
+        needs_input wins ("let me know" is a question, not a fix in progress).
+
+        # ponytail: emits only the marker, not a "[by <planned change>]" object —
+        # the planned change is already in the spoken content; extracting it is
+        # fragile NLP for no added signal."""
+        if category not in (Category.FINAL_ANSWER, Category.INSIGHT):
+            return None
+        text = (content or "").strip()
+        if not text:
+            return None
+        if text[-1] == "?" or cls._NEEDS_INPUT_RE.search(text):
+            return "needs_input"
+        if cls._PROCEEDING_RE.search(text) or cls._PROCEEDING_SIMPLE_RE.search(text):
+            return "proceeding"
+        return None
+
+    @classmethod
+    def _artifact_label(cls, event: dict) -> str:
+        """Artifact/file hint for the summarized path, reusing the existing
+        bash/grep target extractors — no new heuristics (# ponytail: occasionally
+        a runner name like 'the test suite' not a file; acceptable v1)."""
+        if not isinstance(event, dict):
+            return ""
+        tool_input = event.get("tool_input") or {}
+        if not isinstance(tool_input, dict):
+            return ""
+        cmd = tool_input.get("command") or ""
+        if cmd:
+            return cls._bash_target_hint(cmd)
+        return cls._grep_target_file(tool_input)
+
+    def _should_include_project(
+        self, proj: str, content: str, category: Category, now: float
+    ) -> bool:
+        """C2 gate: when to NAME the project verbally. Deterministic, per-project.
+
+        Never names when the content already carries the project name. ERROR
+        always names (clarity beats frequency for failures). Otherwise a project
+        is named only when it is a MEANINGFUL re-anchor:
+
+          * FIRST mention this session, OR
+          * that same project has not been named within reanchor_gap_s.
+
+        PART-B fix: this replaces the two prior modes (voice-ON = first-mention,
+        voice-OFF = every-switch) with ONE per-project rule for both. It kills the
+        two user-visible symptoms of the old single-global tracker:
+
+          * "names on nearly every project switch" — every-switch naming is gone;
+            a switch back to an already-named project stays quiet within the gap.
+          * "repeats on consecutive same-project output" — a project just named
+            has now - last_named ≈ 0 < gap, and is not a first mention, so it is
+            NEVER re-announced back-to-back.
+
+        Under rapid A↔B interleaving, each project keeps its OWN clock, so B
+        speaking never re-arms A's re-anchor. Reads _project_last_named_ts /
+        _introduced_projects (the caller refreshes them after)."""
+        if not proj or proj.lower() in content.lower():
+            return False
+        if category == Category.ERROR:
+            return True
+        last_named = self._project_last_named_ts.get(proj)
+        if last_named is None:
+            return True  # first mention of this project this session
+        if self._reanchor_gap_s > 0 and (now - last_named) >= self._reanchor_gap_s:
+            return True  # this project has been quiet long enough to re-anchor
+        return False
+
+    @staticmethod
+    def _maybe_prefix_location(content: str, project_label: str) -> str:
+        """Pass-through lead-in naming the project. PART-B: a natural spoken
+        lead-in ("In <proj>, <content>") instead of the robotic "<proj> — "
+        em-dash-every-time the user flagged. Deterministic (a single tasteful
+        form, no LLM, no gimmicky rotation); the content is kept verbatim so no
+        fact is mutated. Redundancy-guarded; the frequency gate lives upstream in
+        _should_include_project (so this lead-in now appears far less often)."""
+        if not content or not project_label:
+            return content
+        if project_label.lower() in content.lower():
+            return content
+        return f"In {project_label}, {content}"
+
+    def _apply_output_context(self, decision: RouterDecision, event: dict) -> RouterDecision:
+        """Weave project/artifact/intent into a should_speak decision. Called only
+        when output_context.enabled. Summarized path -> structured facts on
+        context_hint (the LLM phrases them); pass-through -> deterministic project
+        lead-in only (intent stays in the prose, which already carries it).
+        Mutates self._last_spoken_project (single-thread, no lock)."""
+        content = decision.content
+        category = decision.category
+
+        # Identify the project by its REPO ROOT, so all subdirectories of one
+        # project share a single label + voice (never per-folder).
+        proj = self._project_for_event(event)
+
+        now = self._clock()
+        include_project = False
+        if proj:
+            include_project = self._should_include_project(proj, content, category, now)
+            if include_project:
+                # PER-PROJECT re-anchor clock — only THIS project's clock resets,
+                # so an interleaved project can't suppress or trigger its neighbor.
+                self._project_last_named_ts[proj] = now
+                self._introduced_projects.add(proj)  # first-mention gate
+            self._last_spoken_project = proj  # refresh on every resolvable project
+
+        intent = self._intent_marker(content, category)
+
+        if decision.needs_summarization:
+            # C4: append structured facts; the LLM weaves them per the prompt rule.
+            facts: list[str] = []
+            if include_project:
+                facts.append(f"project={proj}")
+            artifact = self._artifact_label(event)
+            if (
+                artifact
+                and artifact.lower() not in content.lower()
+                and artifact.lower() not in decision.context_hint.lower()
+            ):
+                facts.append(f"file={artifact}")
+            if intent:
+                facts.append(f"intent={intent}")
+            if facts:
+                hint = decision.context_hint
+                joined = "; ".join(facts)
+                return replace(
+                    decision,
+                    context_hint=(f"{hint}; {joined}" if hint else joined),
+                )
+            return decision
+
+        # C5: pass-through path — deterministic project lead-in ONLY. The intent
+        # cue is intentionally NOT appended here: on this path _intent_marker
+        # detected the intent FROM `content`, so the prose already conveys it —
+        # restating it as "Fixing now."/"Need your input." would be redundant (the
+        # user's non-redundancy requirement). The cue is reserved for the
+        # summarized path above (intent= on context_hint), where the LLM rewrite
+        # might otherwise drop it.  # ponytail: don't restate what the prose carries.
+        new_content = content
+        if include_project:
+            new_content = self._maybe_prefix_location(new_content, proj)
+        if new_content != content:
+            return replace(decision, content=new_content)
+        return decision
+
+    @staticmethod
+    def _sel_block_type(raw: str) -> tuple[str, int]:
+        """Classify a raw block by its leading markers (NOT a CommonMark parse).
+
+        Returns (type, heading_level) where type is
+        blockquote|heading|list|paragraph|empty. Heading level is the '#' count
+        (0 for non-headings). A block is a list when (nearly) every line carries a
+        bullet/number marker; a blockquote when every line starts with '>'.
+        """
+        lines = [ln for ln in raw.splitlines() if ln.strip()]
+        if not lines:
+            return "empty", 0
+        if all(_SEL_BLOCKQUOTE_LINE_RE.match(ln) for ln in lines):
+            return "blockquote", 0
+        m = _SEL_HEADING_LINE_RE.match(lines[0])
+        if m and len(lines) == 1:
+            return "heading", len(m.group(1))
+        list_lines = sum(
+            1 for ln in lines
+            if _SEL_BULLET_LINE_RE.match(ln) or _SEL_NUMLIST_LINE_RE.match(ln)
+        )
+        if list_lines >= 1 and list_lines >= len(lines) - 1:
+            return "list", 0
+        return "paragraph", 0
+
+    @staticmethod
+    def _sel_is_telemetry(norm: str) -> bool:
+        """True if a (normalized) block is dominated by test/build counts with
+        little other substance — a bare "N passed / N failed" line. Such blocks
+        are LOW-VALUE per the plan's PURPOSE and get a zero substance score (so a
+        message of only these falls back to rule_based_summary rather than
+        speaking noise). A block that merely CONTAINS a count amid real prose
+        ("Fixed and live … 711 passed") keeps its score — it isn't telemetry."""
+        stripped = TEST_RESULT_RE.sub(" ", norm)
+        stripped = BUILD_RESULT_RE.sub(" ", stripped)
+        non_count = [
+            w for w in _SEL_WORD_TOKEN_RE.findall(stripped)
+            if w.lower() not in _SEL_COUNT_WORDS
+        ]
+        has_metric = bool(TEST_RESULT_RE.search(norm) or BUILD_RESULT_RE.search(norm))
+        return has_metric and len(non_count) < 4
+
+    @staticmethod
+    def _sel_take_sentences(
+        text: str, budget: int, *, allow_one: bool = False, max_sentences: int = 3
+    ) -> str:
+        """Take leading COMPLETE sentences of `text` up to `budget` chars and at
+        most `max_sentences` (the codebase's existing "three sentences max"
+        convention, so one block can't monopolize the budget → coverage is
+        preserved). Sentence-aware: never cuts mid-sentence. When `allow_one` and
+        even the first sentence overflows, return that one sentence anyway so the
+        highest-substance block is always represented (never silently dropped)."""
+        text = text.strip()
+        if not text:
+            return ""
+        out: list[str] = []
+        total = 0
+        for s in _SEL_SENTENCE_SPLIT_RE.split(text):
+            s = s.strip()
+            if not s:
+                continue
+            if len(out) >= max_sentences:
+                break
+            add = (1 if out else 0) + len(s)
+            if total + add <= budget:
+                out.append(s)
+                total += add
+            elif not out and allow_one:
+                return s
+            else:
+                break
+        return " ".join(out)
+
+    def _select_spoken_text(self, content: str) -> str:
+        """Deterministic substance-preserving selection of the spoken text for a
+        turn-summary message. Pure (no I/O, no LLM). Pipeline:
+
+          1. Split into blocks on blank lines + leading-marker shape.
+          2. Drop non-speakable blocks via is_speakable; markup->speech via
+             normalize_for_speech (fences/tables/blockquote markers/inline code
+             already stripped there). Keep-list transforms: blockquote ->
+             paragraph (handled by normalize), list -> first N items + "and X
+             more", headings deeper than max_heading_level dropped.
+          3. Score each block by speakable-word count × type weight, minus a
+             telemetry zero-out. Greedily keep the highest-substance blocks (each
+             capped at 3 sentences) up to max_speech_duration_chars, then re-emit
+             in ORIGINAL order — NOT head-biased, NOT "drop body paragraphs
+             first" (both recreate the over-condensation bug).
+          4. A trailing CTA/question (last 1-2 blocks, via _NEEDS_INPUT_RE) is
+             appended LAST, on top of the budget so it's never starved.
+          5. Empty extraction (all-code/all-telemetry) -> rule_based_summary;
+             NEVER silence a turn that had content.
+        """
+        from daemon.ollama_summarizer import rule_based_summary
+
+        if not content or not content.strip():
+            return rule_based_summary(content)
+
+        raw_blocks = re.split(r"\n\s*\n", content)
+        blocks: list[dict] = []
+        for idx, rb in enumerate(raw_blocks):
+            if not rb.strip():
+                continue
+            btype, level = self._sel_block_type(rb)
+            if btype == "heading" and level > self._sel_max_heading_level:
+                continue
+            norm = normalize_for_speech(rb).strip()
+            if not norm or not is_speakable(norm):
+                continue
+            if btype == "list":
+                items = [ln.strip() for ln in norm.splitlines() if ln.strip()]
+                if len(items) > self._sel_max_list_items:
+                    more = len(items) - self._sel_max_list_items
+                    items = items[: self._sel_max_list_items] + [f"and {more} more."]
+                norm = " ".join(items)
+            else:
+                norm = re.sub(r"\s+", " ", norm).strip()
+            words = len(_SEL_WORD_TOKEN_RE.findall(norm))
+            score = (
+                0.0 if self._sel_is_telemetry(norm)
+                else words * _SEL_TYPE_WEIGHT.get(btype, 1.0)
+            )
+            blocks.append({"idx": idx, "norm": norm, "score": score})
+
+        if not blocks:
+            return rule_based_summary(content)
+
+        # CTA: a trailing question / needs-input block. Only the last 1-2 blocks
+        # are considered (reusing _NEEDS_INPUT_RE), so a mid-message question is
+        # never mistaken for the CTA. Spoken last, trimmed to cta_search_limit.
+        cta = None
+        for b in reversed(blocks[-2:]):
+            n = b["norm"]
+            if n.rstrip().endswith("?") or self._NEEDS_INPUT_RE.search(n):
+                cta = b
+                break
+        cta_text = ""
+        if cta is not None:
+            sents = _SEL_SENTENCE_SPLIT_RE.split(cta["norm"])
+            cta_text = sents[-1].strip() if sents else cta["norm"]
+            if len(cta_text) > self._sel_cta_search_limit:
+                cta_text = self._sel_take_sentences(
+                    cta["norm"], self._sel_cta_search_limit,
+                    allow_one=True, max_sentences=2,
+                )
+
+        substantive = [b for b in blocks if b["score"] > 0 and b is not cta]
+        if not substantive:
+            return cta_text or rule_based_summary(content)
+
+        budget = self._sel_max_chars
+        selected: dict[int, str] = {}
+        first = True
+        for b in sorted(substantive, key=lambda x: x["score"], reverse=True):
+            if budget <= 0:
+                break
+            piece = self._sel_take_sentences(
+                b["norm"], budget, allow_one=first, max_sentences=3
+            )
+            first = False
+            if piece:
+                selected[b["idx"]] = piece
+                budget -= len(piece) + 1
+
+        ordered = [selected[i] for i in sorted(selected)]
+        if cta_text:
+            ordered.append(cta_text)
+        result = " ".join(p for p in ordered if p).strip()
+        return result or rule_based_summary(content)
 
     def _apply_project_voice(self, decision: RouterDecision, event: dict) -> RouterDecision:
         voice = self._resolve_project_voice(self._project_for_event(event))

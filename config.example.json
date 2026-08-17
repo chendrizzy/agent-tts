@@ -38,6 +38,26 @@
     ],
     "_pool_desc": "The daemon maps sha256(project_label) % len(pool). Repeated entries are intentional weighting slots for preferred policies; changing this pool can remap projects after restart."
   },
+  "output_context": {
+    "_comment": "Weave project/artifact/intent into spoken output when it adds value — one daemon narrating several projects otherwise gives you no way to tell which repo just spoke. Deterministic gate decides WHETHER to name it; phrasing stays natural. Independent of project_voices: voices distinguish by SOUND, this names it in words. Ships OFF. Read at daemon start — restart to apply.",
+    "enabled": false,
+    "reanchor_gap_s": 90,
+    "_reanchor_gap_s_desc": "Re-name the current project after this many seconds since it was last named, even without a project switch — a repeat after a quiet spell re-orients the listener without feeling noisy. 0 disables (name only on first mention, switch, or ERROR)."
+  },
+  "speech_selection": {
+    "_comment": "Deterministic, substance-preserving selector for the turn-summary path. When enabled, the needs-summarization branch picks the highest-substance blocks INSTEAD of asking the LLM — no model decides salience, no LLM call, no network. Fixes over-condensation (the LLM dropped rich blockquote deliverables). Reuses the shipped normalize_for_speech / is_speakable primitives. Ships OFF, so flag-OFF output is byte-identical to the LLM path. Read at daemon start — restart to apply.",
+    "enabled": false,
+    "max_speech_duration_chars": 400,
+    "_max_speech_duration_chars_desc": "Substance char budget for the selected text. A trailing question/CTA is appended on top of this, so it is never starved.",
+    "max_list_items_to_speak": 3,
+    "_max_list_items_to_speak_desc": "Speak the first N items of a list, then 'and X more.'",
+    "max_heading_level": 2,
+    "_max_heading_level_desc": "Drop headings deeper than this level — deeper headings are navigational, not substance.",
+    "inline_code_max_chars": 24,
+    "_inline_code_max_chars_desc": "Reserved knob for inline-code handling; normalize_for_speech already unwraps inline code to its contents.",
+    "cta_search_limit_chars": 240,
+    "_cta_search_limit_chars_desc": "Max spoken length of the trailing question/CTA; also bounds how far back a CTA is looked for."
+  },
   "voicebox": {
     "_comment": "Only used when voice.engine == 'voicebox'. Local Voicebox REST API (token-free, no MCP).",
     "url": "http://127.0.0.1:17493",

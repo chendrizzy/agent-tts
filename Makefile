@@ -51,7 +51,9 @@ verify:
 		tests/test_calibration.py \
 		tests/test_service_render.py \
 		tests/test_systemd_render.py \
-		tests/test_config_render.py
+		tests/test_config_render.py \
+		tests/test_output_context.py \
+		tests/test_speech_selection.py
 
 verify-all:
 	$(PYTHON) -m pytest -q tests

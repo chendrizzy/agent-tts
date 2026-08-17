@@ -140,6 +140,29 @@ def test_disabled_or_empty_pool_yields_none(repos):
     assert _daemon_voice(empty, cwd) is None
 
 
+def test_cwdless_event_still_resolves_a_voice(router, repos, monkeypatch):
+    """REGRESSION: an event with no `cwd` must resolve via the session-cwd map.
+
+    _project_for_event falls back to spoken_log.get_session_cwd() inside a
+    best-effort `except Exception`. When that accessor did not exist in this
+    tree the fallback raised AttributeError, was swallowed, and EVERY cwd-less
+    event (the stop/prose path — exactly the turn-final speech users hear)
+    silently resolved to no project, so no per-project voice applied. The
+    swallowing except means a missing accessor cannot fail loudly; only this
+    test can.
+    """
+    from daemon import spoken_log
+
+    root = str(repos / "alpha-service")
+    spoken_log.note_session_cwd("sess-cwdless", root)
+    assert spoken_log.get_session_cwd("sess-cwdless") == root
+
+    voice = _daemon_voice(router, root)
+    assert voice is not None
+    assert router._resolve_project_voice(
+        router._project_for_event({"session_id": "sess-cwdless"})) == voice
+
+
 @pytest.mark.parametrize("command", ["voices.md", "log.md"])
 def test_command_files_still_embed_the_mapping(command):
     """Textual pin: editing the inline copy must fail this gate."""

@@ -68,6 +68,19 @@ def note_session_cwd(session_id: str, cwd: Optional[str]) -> None:
         pass
 
 
+def get_session_cwd(session_id: str) -> Optional[str]:
+    """The cwd last recorded for ``session_id`` (or None). The router's stop/prose
+    path has no cwd on the event, so it resolves the project from this map, which
+    ``note_session_cwd`` populates from every tool_event.
+
+    Without this accessor, ContentRouter._project_for_event's fallback raised
+    AttributeError into its best-effort ``except``, so a cwd-less event silently
+    resolved to NO project — per-project voices simply never applied to those
+    events, and output_context could not name the project either.
+    """
+    return _SESSION_CWD.get(session_id or "")
+
+
 def append(
     text: str,
     *,
