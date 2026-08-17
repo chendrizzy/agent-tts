@@ -47,6 +47,7 @@ verify:
 		tests/test_paths.py \
 		tests/test_plugin_manifest.py \
 		tests/test_project_voice_parity.py \
+		tests/test_release_notes.py \
 		tests/test_calibration.py \
 		tests/test_service_render.py \
 		tests/test_systemd_render.py \

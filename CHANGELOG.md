@@ -6,6 +6,15 @@ All notable changes to claude-tts are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+- Releases now quote this file. `release.yml` built its notes with
+  `gh release create --generate-notes`, which lists merged PRs since the last
+  tag — this repo releases straight from `main`, so v0.1.7's notes described an
+  unrelated dead-code PR instead of the release. The workflow now publishes the
+  CHANGELOG section for the tagged version (`scripts/release_notes.py`), and
+  `make verify` fails when the version in `pyproject.toml` has no section, so a
+  release cannot be cut without notes.
+
 ## [0.1.7] — 2026-08-16
 
 ### Added
