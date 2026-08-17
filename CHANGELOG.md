@@ -6,7 +6,22 @@ All notable changes to claude-tts are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-08-16
+
 ### Added
+- Per-project voices. The daemon now assigns a deterministic voice per repo
+  (`pool[sha256(repo_basename) % len(pool)]`), resolved per message rather than
+  frozen at session start, so a session that spans projects speaks each one in
+  its own voice. Off unless `project_voices.enabled` is set.
+- `/tts:voices` — show the deterministic project → voice map, with the current
+  repo highlighted, so an audible cue becomes visible. Read-only.
+- `/tts:log` tags every line with its `project · voice`, so the replay shows
+  which repo each utterance came from and which voice spoke it.
+- `/tts:setup` now asks whether voices should vary per project or stay shared
+  across all projects, and asks for balanced, locked, or mostly preferred voice
+  gender policy. Generated configs persist the answers in `project_voices` with
+  stable enum values and materialized 50/50, 100/0, or 80/20 voice pools for
+  `edge-tts` and `kokoro`.
 - `/tts:config` — view or change any setting by dotted key
   (`/tts:config summarizer.soft_tokens 220`), with validation against each key's
   own `_options`/`_range`/type hints and a `config.json.bak` backup before
