@@ -65,6 +65,7 @@ class RouterDecision:
     needs_summarization: bool = False      # True if >120 chars and not yet summarized
     context_hint: str = ""                 # e.g., "test result" — passed to summarizer
     raw_excerpt: str = ""                  # First 80 chars of pre-summarization input (for logs)
+    voice: Optional[str] = None            # Per-project voice override; None = default voice
 
 
 @dataclass

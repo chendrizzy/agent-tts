@@ -39,13 +39,14 @@ from daemon.pipeline.orchestrator import TTSPipelineOrchestrator
 # ---------------------------------------------------------------------------
 
 def _make_msg(content: str = "hello", request_id: str = "r1",
-              session_id: str = "s1") -> IngestMessage:
+              session_id: str = "s1", voice: Optional[str] = None) -> IngestMessage:
     return IngestMessage(
         content=content,
         session_id=session_id,
         priority=5,
         request_id=request_id,
         ingested_at=time.time(),
+        voice=voice,
     )
 
 
@@ -306,6 +307,17 @@ class TestBackwardCompatibility(unittest.TestCase):
         self.assertIs(called_arg, msg)
         self.assertEqual(mocks["generate_generate"].call_count, 1)
         self.assertEqual(mocks["playback_enqueue"].call_count, 1)
+
+    def test_message_voice_overrides_do_not_pin_session_default(self):
+        """A later message with no override falls back to the configured default."""
+        orch, mocks = _build_orchestrator(queue_manager=None)
+        first = _make_msg("first", "r1", voice="voice-a")
+        second = _make_msg("second", "r2", voice=None)
+
+        asyncio.run(_run_one_iteration(orch, "s1", [first, second]))
+
+        voices = [call.args[1] for call in mocks["generate_generate"].call_args_list]
+        self.assertEqual(voices, ["voice-a", "en-US-AriaNeural"])
 
     def test_set_queue_manager_late_bind(self):
         """`set_queue_manager` should switch the loop to interceptor mode."""

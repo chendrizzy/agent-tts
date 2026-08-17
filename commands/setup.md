@@ -9,11 +9,16 @@ Invoke the **tts-setup** skill and follow it end-to-end. The skill bootstraps:
 
 1. Detect the platform and architecture (macOS/Linux, arm64/x86_64).
 2. Ensure `uv` and a project virtual environment are available.
-3. Pick the speech engine and the LLM backend for content routing.
-4. Calibrate the chosen backend against the bundled mini-eval.
-5. Install the OS background service (launchd on macOS, systemd --user on Linux).
-6. Write `~/.config/claude-tts/config.json`.
-7. Verify the daemon starts and the socket binds at
+3. Pick the speech engine.
+4. Ask whether voices vary per project or stay shared across all projects.
+5. Ask for voice gender policy: balanced, female-only, male-only, mostly female,
+   or mostly male. The stable config values are `balanced`, `female_only`,
+   `male_only`, `female_preferred`, and `male_preferred`; mostly means 80/20.
+6. Pick the LLM backend for content routing.
+7. Calibrate the chosen backend against the bundled mini-eval.
+8. Install the OS background service (launchd on macOS, systemd --user on Linux).
+9. Write `~/.config/claude-tts/config.json`.
+10. Verify the daemon starts and the socket binds at
    `${CLAUDE_TTS_SOCKET:-${XDG_RUNTIME_DIR:-/tmp}/claude-tts.sock}`.
 
 Run the skill now. Do not hardcode absolute paths — always use `~/.config/claude-tts`
@@ -23,6 +28,12 @@ failed and the single most likely remediation, then stop.
 Note: the full bootstrap and calibration logic lives in the tts-setup skill. If the
 skill reports it is a stub, tell the user setup automation is not yet available in
 this build and point them at `/tts:doctor` to check current health.
+
+Only `edge-tts` and `kokoro` expose bundled gender metadata in this plugin. For
+`say`, `espeak`, and `voicebox`, setup must keep `project_voices.enabled=false`
+and explain that gender/per-project assignment is not enforceable for that
+engine. Changing a generated voice pool can remap projects, so restart the daemon
+after changing these preferences.
 
 Optional post-setup integrations (not part of the automated skill flow):
 

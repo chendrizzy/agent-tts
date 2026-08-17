@@ -24,6 +24,7 @@ class IngestMessage:
     request_id: str
     ingested_at: float
     source: str = "hook"
+    voice: Optional[str] = None
 
     def __post_init__(self):
         # Ensure ingested_at is set

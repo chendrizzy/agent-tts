@@ -14,6 +14,30 @@
     "volume": 1.0,
     "_volume_desc": "afplay -v gain: 1.0 unmodified, <1.0 quieter, >1.0 amplifies."
   },
+  "project_voices": {
+    "_comment": "Deterministic project voice assignment. /tts:setup writes this block from your voice-scope and gender-policy answers.",
+    "enabled": true,
+    "_enabled_desc": "true = vary voices per project using the materialized pool below. false = use voice.name for every project.",
+    "gender_preference": "balanced",
+    "_gender_preference_options": ["balanced", "female_only", "male_only", "female_preferred", "male_preferred"],
+    "_gender_preference_desc": "balanced = 50/50 female/male. female_only or male_only = locked 100/0. female_preferred or male_preferred = mostly that gender at 80/20.",
+    "preferred_ratio": 0.5,
+    "_preferred_ratio_desc": "0.5 for balanced, 1.0 for locked, 0.8 for mostly preferred policies.",
+    "gender_enforced": true,
+    "_supported_engines": ["edge-tts", "kokoro"],
+    "_unsupported_engine_note": "say, espeak, and voicebox do not expose portable gender metadata here, so setup keeps project_voices.enabled=false for those engines.",
+    "pool": [
+      "en-US-AvaNeural",
+      "en-US-GuyNeural",
+      "en-US-EmmaMultilingualNeural",
+      "en-US-BrianMultilingualNeural",
+      "en-US-JennyNeural",
+      "en-US-ChristopherNeural",
+      "en-US-AriaNeural",
+      "en-US-AndrewMultilingualNeural"
+    ],
+    "_pool_desc": "The daemon maps sha256(project_label) % len(pool). Repeated entries are intentional weighting slots for preferred policies; changing this pool can remap projects after restart."
+  },
   "voicebox": {
     "_comment": "Only used when voice.engine == 'voicebox'. Local Voicebox REST API (token-free, no MCP).",
     "url": "http://127.0.0.1:17493",

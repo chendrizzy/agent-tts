@@ -96,8 +96,9 @@ claude-tts is a Claude Code plugin. Once it's added as a marketplace source:
 /tts:setup
 ```
 
-`/tts:setup` detects your platform, picks an engine and LLM backend, calibrates
-the backend against a bundled mini-eval, installs the background service
+`/tts:setup` detects your platform, picks an engine, asks whether voices should
+vary per project or stay shared, asks for balanced/locked/preferred voice gender
+policy, picks and calibrates the LLM backend, installs the background service
 (`launchd` / `systemd --user`), and writes your config. Re-runnable and
 idempotent; `/tts:doctor` re-checks health anytime.
 
@@ -123,11 +124,12 @@ engine additionally needs an `mlx-audio` interpreter pointed to by `$MLX_PYTHON`
 
 | Command | What it does |
 |---------|--------------|
-| `/tts:setup` | First-run setup: engine, LLM backend, calibration, service, config |
+| `/tts:setup` | First-run setup: engine, voice assignment preferences, LLM backend, calibration, service, config |
 | `/tts:status` | Daemon socket, active engine + model, recent log tail (read-only) |
 | `/tts:log` | Replay what the daemon has actually spoken — newest first, with timestamps + category (read-only) |
 | `/tts:doctor` | Disk, daemon/socket, deps, backend reachability — PASS/WARN + fixes |
 | `/tts:voice` | Pick a speech engine and voice, then restart to apply |
+| `/tts:voices` | Show the deterministic project → voice map, current repo highlighted (read-only) |
 | `/tts:config` | View or change any setting by key, with validation, then restart to apply |
 | `/tts:uninstall` | Stop and remove the service/daemon (optionally the config) |
 
@@ -146,9 +148,12 @@ engine additionally needs an `mlx-audio` interpreter pointed to by `$MLX_PYTHON`
 
 Copy [`config.example.json`](config.example.json) (every key is annotated inline)
 and edit. Every block is optional; the daemon embeds safe defaults. Common knobs:
-`voice.engine`, `llm_provider.type`, `summarizer.model`,
-`filtering.max_response_length`. Full reference, defaults, and environment
-variables: **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**.
+`voice.engine`, `project_voices.enabled`,
+`project_voices.gender_preference`, `llm_provider.type`, `summarizer.model`, and
+`filtering.max_response_length`. Per-project and gender-aware assignment is
+enforced for `edge-tts` and `kokoro`; system/Voicebox engines use the shared
+`voice.name`. Full reference, defaults, and environment variables:
+**[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**.
 
 ## Spoken-output log & statusline
 

@@ -41,7 +41,8 @@ def test_marketplace_json_is_valid_and_consistent():
 
 COMMANDS_DIR = ROOT / "commands"
 SKILL_MD = ROOT / "skills" / "tts-setup" / "SKILL.md"
-COMMAND_NAMES = ("setup", "voice", "status", "doctor", "log", "config", "uninstall")
+COMMAND_NAMES = ("setup", "voice", "voices", "status", "doctor", "log", "config",
+                 "uninstall")
 
 
 def _frontmatter(text):
@@ -104,6 +105,7 @@ NEW_SHELL_FILES = (
     MARKETPLACE_JSON,
     COMMANDS_DIR / "setup.md",
     COMMANDS_DIR / "voice.md",
+    COMMANDS_DIR / "voices.md",
     COMMANDS_DIR / "status.md",
     COMMANDS_DIR / "doctor.md",
     COMMANDS_DIR / "config.md",

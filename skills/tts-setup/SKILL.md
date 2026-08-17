@@ -23,7 +23,7 @@ plugin). Run all Python through the project's uv venv: `uv run python ...`.
 Run `uname -s` (Darwin/Linux) and `uname -m` (arm64/x86_64). Record both. On
 `Darwin`+`arm64` the machine is Apple Silicon (Kokoro is available). Background
 service install is automated on both platforms (launchd on macOS, `systemd
---user` on Linux); Step 6 falls back to a manual launch only when no `systemd`
+--user` on Linux); Step 7 falls back to a manual launch only when no `systemd`
 user session is present.
 
 ## Step 2 — Ensure uv + environment
@@ -47,7 +47,37 @@ If no ML engine is available and `uv sync --extra edge` cannot install edge-tts
 **system engine**. It always produces audio on a bare machine (using the OS
 default voice; `voice_name` is ignored for this engine).
 
-## Step 4 — Choose the LLM backend
+## Step 4 — Choose voice assignment preferences
+
+Ask how voices should be assigned:
+
+1. **Per project** — deterministic varying voices by project (current behavior).
+2. **Shared** — the same `voice.name` for every project (old behavior).
+
+Record `project_voice_scope` as `per_project` or `shared`.
+
+Then gather voice gender preference in at most two short questions. First ask:
+
+1. **Balanced** — equal female/male probability.
+2. **Female voices**.
+3. **Male voices**.
+
+If the user chooses female or male voices, ask whether that gender is
+**Only** (locked 100/0) or **Mostly** (preferred 80/20). This produces the five
+supported outcomes without an oversized option list.
+
+Record `voice_gender_preference` exactly as one of `balanced`, `female_only`,
+`male_only`, `female_preferred`, or `male_preferred`.
+
+Only `edge-tts` and `kokoro` have bundled gender metadata, so they can enforce
+per-project and gender policy. For `say`, `espeak`, and `voicebox`, explain that
+setup will keep a shared voice because portable gender/per-project assignment is
+not enforceable for that engine in this plugin build.
+
+Changing the generated pool can remap existing project-to-voice assignments.
+Tell the user a daemon restart is required after changing these preferences.
+
+## Step 5 — Choose the LLM backend
 
 Default: local **Ollama** with model `qwen2.5-coder:1.5b`. Offer to pull it:
 `ollama pull qwen2.5-coder:1.5b` (skip if `ollama list` already shows it).
@@ -56,7 +86,7 @@ read the API key from an environment variable the user names — never store the
 raw key in shell history). Or **none** (deterministic mode). Record `backend`
 ∈ `ollama`/`openai`/`null`.
 
-## Step 5 — Calibrate against the mini-eval
+## Step 6 — Calibrate against the mini-eval
 
 Run the calibration gate for the chosen backend:
 `uv run python scripts/calibrate.py --backend <backend> [--model <m>] [--base-url <url>] [--api-key-env <ENVVAR>] --json`
@@ -67,7 +97,7 @@ deterministic floor and set `backend = null` for the config — TTS still works,
 just rule-based. The `null` backend skips scoring and is deterministic by
 definition.
 
-## Step 6 — Install the OS service + start the daemon
+## Step 7 — Install the OS service + start the daemon
 
 Compute the launcher: `PYTHON = ROOT/.venv/bin/python`, `program_args =
 [PYTHON, "-m", "daemon.tts_daemon"]`, `env = {"PYTHONUNBUFFERED": "1",
@@ -90,11 +120,11 @@ Verify the socket binds at
 `${CLAUDE_TTS_SOCKET:-${XDG_RUNTIME_DIR:-/tmp}/claude-tts.sock}`.
 Remediation on failure: check `/tmp/claude-tts-daemon.err.log`.
 
-## Step 7 — Write the config + verify
+## Step 8 — Write the config + verify
 
 Write `~/.config/claude-tts/config.json` (read any API key from the env var you
-named in Step 4 — never inline the raw key):
-`uv run python -c "import os; from daemon.config_io import render_config, write_config; write_config(render_config(engine='<engine>', voice_name='<voice>', backend='<backend>', model='<model>', base_url='<url>', api_key=os.environ.get('<KEY_ENV>', '')))"`.
+named in Step 5 — never inline the raw key):
+`uv run python -c "import os; from daemon.config_io import render_config, write_config; write_config(render_config(engine='<engine>', voice_name='<voice>', backend='<backend>', model='<model>', base_url='<url>', api_key=os.environ.get('<KEY_ENV>', ''), project_voice_scope='<project_voice_scope>', voice_gender_preference='<voice_gender_preference>'))"`.
 Then run the `/tts:doctor` checks (disk, daemon+socket, deps, backend
 reachability) and play one test utterance to confirm audio. Report the overall
 verdict. If doctor reports any WARN, surface it with its remediation.

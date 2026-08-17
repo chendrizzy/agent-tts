@@ -656,6 +656,7 @@ class QueueManager:
             needs_summarization=True,
             context_hint="",
             raw_excerpt=(message.content or "")[:80],
+            voice=getattr(message, "voice", None),
         )
         return RoutedItem(
             decision=decision,
@@ -682,6 +683,7 @@ class QueueManager:
             request_id=new_id,
             ingested_at=time.time(),
             source=getattr(template, "source", "hook"),
+            voice=getattr(template, "voice", None),
         )
 
     def _maybe_prepend_skipped(

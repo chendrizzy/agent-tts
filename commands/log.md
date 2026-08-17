@@ -41,7 +41,7 @@ fi
 python3 - "$F" "$N" "$SESSION" <<'PY'
 # Mirrors daemon/spoken_log.read_merged (the tested reference) — kept inline so
 # the command stays self-contained as an installed plugin.
-import sys, json, time, os, glob
+import sys, json, time, os, glob, hashlib
 
 f = sys.argv[1] if len(sys.argv) > 1 else ""
 try:
@@ -84,6 +84,72 @@ def include_subagent_flag():
             continue
     return False
 
+# --- G006: per-line "project · voice" tag -------------------------------------
+# Reproduces daemon/content_router.py's mapping EXACTLY (project_root ->
+# project_label -> resolve_project_voice), pinned to the daemon by the source
+# tree's tests/test_project_voice_parity.py. The tag shows which voice the daemon
+# speaks each entry's repo in — the audible cue, made visible.
+def load_pool():
+    cands = []
+    if os.environ.get("CLAUDE_TTS_CONFIG"):
+        cands.append(os.environ["CLAUDE_TTS_CONFIG"])
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    cands.append(os.path.join(xdg, "claude-tts", "config.json"))
+    cands.append(os.path.expanduser("~/.claude/tts/config/tts_user_config.json"))
+    cands.append(os.path.expanduser("~/.claude/tts/config/config.json"))
+    cands.append(os.path.join(os.getcwd(), "config.json"))
+    for c in cands:
+        try:
+            with open(c, encoding="utf-8") as fh:
+                pv = (json.load(fh) or {}).get("project_voices", {}) or {}
+            if pv.get("enabled") and pv.get("pool"):
+                return list(pv["pool"])
+        except Exception:
+            continue
+    return []
+
+_POOL = load_pool()
+
+def _proj_root(cwd):
+    if not isinstance(cwd, str) or not cwd.strip():
+        return ""
+    cwd = cwd.strip()
+    root = cwd
+    try:
+        d = os.path.abspath(cwd)
+        while True:
+            if os.path.exists(os.path.join(d, ".git")):
+                root = d
+                break
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+    except Exception:
+        root = cwd
+    return root
+
+def _proj_label(cwd):
+    if not isinstance(cwd, str):
+        return ""
+    c = cwd.strip()
+    if not c:
+        return ""
+    proj = c.rstrip("/").rsplit("/", 1)[-1]
+    if not proj or proj in ("", "/", ".", "tmp"):
+        return ""
+    return proj
+
+def pv_tag(rec):
+    """'project · voice' for a spoken-log record, or '-' when unresolvable."""
+    lbl = _proj_label(_proj_root(rec.get("cwd") or ""))
+    if not lbl:
+        return "-"
+    if not _POOL:
+        return lbl
+    idx = int(hashlib.sha256(lbl.encode("utf-8")).hexdigest(), 16) % len(_POOL)
+    return f"{lbl}·{_POOL[idx]}"
+
 if not f:
     print("(no spoken output logged yet — speak something, then try again)")
     raise SystemExit
@@ -121,7 +187,7 @@ if include_subagent_flag() and not explicit_session:
         ts = time.strftime("%H:%M:%S", time.localtime(r.get("ts", 0)))
         cat = r.get("category") or "-"
         src = r.get("session", "-")
-        print(f"{ts}  [{src:>8}]  [{cat:>12}]  {r.get('text','')}")
+        print(f"{ts}  [{src:>8}]  [{cat:>12}]  {pv_tag(r):<20}  {r.get('text','')}")
 else:
     lines = read_all(f)
     shown = lines[-n:]
@@ -131,6 +197,6 @@ else:
     for r in reversed(shown):  # newest first
         ts = time.strftime("%H:%M:%S", time.localtime(r.get("ts", 0)))
         cat = r.get("category") or "-"
-        print(f"{ts}  [{cat:>12}]  {r.get('text','')}")
+        print(f"{ts}  [{cat:>12}]  {pv_tag(r):<20}  {r.get('text','')}")
 PY
 ```

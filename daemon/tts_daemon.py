@@ -1271,6 +1271,7 @@ class TTSDaemon:
                 self._submit_to_pipeline(
                     result.decision.content, session_id, result.decision.priority,
                     request_id=result.decision.source_event_id or event_id,
+                    voice=result.decision.voice,
                 )
                 queued = True
                 reason = 'error pre-empted'
@@ -1305,6 +1306,7 @@ class TTSDaemon:
                 ok = self._submit_to_pipeline(
                     result.decision.content, session_id, result.decision.priority,
                     request_id=result.decision.source_event_id or event_id,
+                    voice=result.decision.voice,
                 )
                 queued = bool(ok)
                 reason = 'submitted directly (TurnBuffer not yet available)' if ok else 'pipeline submit failed'
@@ -1430,6 +1432,7 @@ class TTSDaemon:
         ok = self._submit_to_pipeline(
             result.decision.content, session_id, result.decision.priority,
             request_id=result.decision.source_event_id or event_id,
+            voice=result.decision.voice,
         )
         return {
             'status': 'accepted' if ok else 'error',
@@ -1446,20 +1449,22 @@ class TTSDaemon:
         session_id: str,
         priority: int,
         request_id: Optional[str] = None,
+        voice: Optional[str] = None,
     ) -> bool:
         """Submit a routed item directly to PipelineAdapter (skipping
         TurnBuffer). Returns True on success, False otherwise.
 
         OBSERVE-01: ``request_id`` is forwarded through the adapter →
         orchestrator → IngestMessage chain so logs at every pipeline
-        stage share the same UUID for traceability.
+        stage share the same UUID for traceability. ``voice`` carries a
+        per-message project override; None uses the pipeline default.
         """
         if not content or self._pipeline_adapter is None:
             return False
         try:
             self._pipeline_adapter.submit_async(
                 content=content, session_id=session_id, priority=priority,
-                request_id=request_id,
+                request_id=request_id, voice=voice,
             )
             return True
         except Exception as e:
@@ -2160,6 +2165,7 @@ class TTSDaemon:
                             item.decision.content,
                             item.session_id,
                             item.decision.priority,
+                            voice=item.decision.voice,
                         )
                     except Exception as e:
                         # Log per-item failures but keep draining; one bad item

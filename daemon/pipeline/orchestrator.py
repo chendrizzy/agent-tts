@@ -241,7 +241,8 @@ class TTSPipelineOrchestrator:
             session_id=session_id,
             priority=priority,
             request_id=request_id,
-            ingested_at=time.time()
+            ingested_at=time.time(),
+            voice=voice,
         )
 
         # Ingest
@@ -256,7 +257,7 @@ class TTSPipelineOrchestrator:
         # Ensure session processing task is running
         if session_id not in self._session_tasks:
             task = asyncio.create_task(
-                self._process_session(session_id, voice),
+                self._process_session(session_id),
                 name=f"session-proc[{session_id}]",
             )
             # DAEMON-04: log unhandled exceptions (PITFALLS N1/N6 mitigation)
@@ -286,7 +287,7 @@ class TTSPipelineOrchestrator:
         processing, generating audio, and enqueueing for playback.
         """
         await self.playback.start_session(session_id)
-        voice = voice or self._config['voice']
+        default_voice = voice or self._config['voice']
 
         while self._running:
             try:
@@ -330,7 +331,8 @@ class TTSPipelineOrchestrator:
                     self.metrics.messages_processed += 1
 
                     # 3. Generate audio (parallel workers)
-                    async for segment in self.generate.generate(processed, voice):
+                    message_voice = msg.voice or default_voice
+                    async for segment in self.generate.generate(processed, message_voice):
                         self.metrics.segments_generated += 1
 
                         # 4. Enqueue for playback (per-session buffer)

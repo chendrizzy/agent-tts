@@ -439,6 +439,16 @@ class ContentRouter:
         # vs backpressure vs dedup) is unrecoverable from the log.
         self._last_drop_reason: str = ""
 
+        pv_cfg = self.config.get("project_voices", {}) if isinstance(self.config, dict) else {}
+        self._project_voices_enabled = bool(pv_cfg.get("enabled", False))
+        raw_pool = pv_cfg.get("pool", []) if isinstance(pv_cfg, dict) else []
+        self._project_voice_pool: list[str] = (
+            [v.strip() for v in raw_pool if isinstance(v, str) and v.strip()]
+            if isinstance(raw_pool, (list, tuple))
+            else []
+        )
+        self._project_root_cache: dict[str, str] = {}
+
         # ---- TurnBuffer plumbing (W2.C) ----
         # Per-session lazy-created TurnBuffers; cached so add() can be called
         # repeatedly without rebuilding the buffer state.
@@ -586,6 +596,8 @@ class ContentRouter:
             and len(decision.content) >= self.summarize_threshold / pressure
         ):
             decision = replace(decision, needs_summarization=True)
+
+        decision = self._apply_project_voice(decision, event)
 
         if decision.needs_summarization:
             decision = await self._maybe_summarize(decision)
@@ -1404,6 +1416,62 @@ class ContentRouter:
 
         return "; ".join(parts)
 
+    @staticmethod
+    def _project_label(cwd: Any) -> str:
+        if not isinstance(cwd, str):
+            return ""
+        c = cwd.strip()
+        if not c:
+            return ""
+        proj = c.rstrip("/").rsplit("/", 1)[-1]
+        if not proj or proj in ("", "/", ".", "tmp"):
+            return ""
+        return proj
+
+    def _project_root(self, cwd: str) -> str:
+        if not isinstance(cwd, str) or not cwd.strip():
+            return ""
+        cwd = cwd.strip()
+        cached = self._project_root_cache.get(cwd)
+        if cached is not None:
+            return cached
+        import os
+        root = cwd
+        try:
+            d = os.path.abspath(cwd)
+            while True:
+                if os.path.exists(os.path.join(d, ".git")):
+                    root = d
+                    break
+                parent = os.path.dirname(d)
+                if parent == d:
+                    break
+                d = parent
+        except Exception:  # noqa: BLE001 - best-effort context
+            root = cwd
+        self._project_root_cache[cwd] = root
+        return root
+
+    def _project_for_event(self, event: dict) -> str:
+        cwd = event.get("cwd") if isinstance(event, dict) else ""
+        if not cwd:
+            try:
+                from daemon import spoken_log
+                cwd = spoken_log.get_session_cwd(event.get("session_id") or "")
+            except Exception:  # noqa: BLE001 - context is best-effort
+                cwd = ""
+        return self._project_label(self._project_root(cwd or ""))
+
+    def _resolve_project_voice(self, proj: str) -> Optional[str]:
+        if not self._project_voices_enabled or not proj or not self._project_voice_pool:
+            return None
+        idx = int(hashlib.sha256(proj.encode("utf-8")).hexdigest(), 16) % len(self._project_voice_pool)
+        return self._project_voice_pool[idx]
+
+    def _apply_project_voice(self, decision: RouterDecision, event: dict) -> RouterDecision:
+        voice = self._resolve_project_voice(self._project_for_event(event))
+        return replace(decision, voice=voice) if voice else decision
+
     # ------- Ollama plumbing --------------------------------------------
 
     async def _binary_llm_judge(
@@ -1520,6 +1588,7 @@ class ContentRouter:
             needs_summarization=needs_summarization,
             context_hint=context_hint,
             raw_excerpt=_truncate(content, 80),
+            voice=None,
         )
 
     def _silence(self, event: Any, reason: str) -> RouterDecision:

@@ -14,7 +14,12 @@ Steps:
    voices it offers. Present them as a numbered list with a recommendation.
 3. When the user picks, update `voice.engine` and/or `voice.name` in
    `~/.config/claude-tts/config.json`. Preserve all other config keys exactly;
-   write valid JSON.
+   write valid JSON. If the engine changes to `say`, `espeak`, or `voicebox`,
+   set `project_voices.enabled=false` because those engines cannot enforce
+   portable per-project gender policy. If the engine changes to `edge-tts` or
+   `kokoro` and the user wants to regenerate assignment preferences, use the
+   same stable `project_voices.gender_preference` enum as setup: `balanced`,
+   `female_only`, `male_only`, `female_preferred`, or `male_preferred`.
 4. Restart the daemon so the change takes effect (the daemon reads config on
    start). Confirm the socket is bound afterward at
    `${CLAUDE_TTS_SOCKET:-${XDG_RUNTIME_DIR:-/tmp}/claude-tts.sock}`.

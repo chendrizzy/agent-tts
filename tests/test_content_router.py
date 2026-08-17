@@ -159,6 +159,32 @@ def test_route_short_returns_routed_item_no_summary() -> None:
     assert "Done." in item.decision.content
 
 
+def test_route_assigns_project_voice_without_output_context() -> None:
+    pool = ["v1", "v2", "v3"]
+    router = ContentRouter(
+        config={"project_voices": {"enabled": True, "pool": pool}},
+        provider=OllamaProvider(MockOllamaSummarizer()),
+    )
+    event = _short_final_answer_event()
+    event["cwd"] = "/repo/alpha"
+
+    item = asyncio.run(router.route(event))
+
+    assert item is not None
+    assert item.decision.voice == router._resolve_project_voice("alpha")
+    assert item.decision.voice in pool
+    assert item.decision.content == "Done. Bug fixed."
+
+
+@pytest.mark.parametrize("pool", [[], "not-a-list", [{"bad": "voice"}]])
+def test_project_voice_bad_pool_falls_back_to_default(pool) -> None:
+    router = ContentRouter(
+        config={"project_voices": {"enabled": True, "pool": pool}},
+        provider=OllamaProvider(MockOllamaSummarizer()),
+    )
+    assert router._resolve_project_voice("alpha") is None
+
+
 def test_route_long_calls_summarizer() -> None:
     summarizer = MockOllamaSummarizer(response="Refactored cache; halved evictions.")
     router = ContentRouter(config={}, provider=OllamaProvider(summarizer))

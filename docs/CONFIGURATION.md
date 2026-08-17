@@ -31,6 +31,26 @@ never world-readable.
 | `mlx_python` | `null` | **kokoro only** — interpreter with `mlx-audio`; `null` → `$MLX_PYTHON`, else `python3` |
 | `kokoro_model` | `mlx-community/Kokoro-82M-bf16` | **kokoro only** |
 
+### `project_voices` — project assignment and gender policy
+| Key | Default | Notes |
+|-----|---------|-------|
+| `enabled` | `false` from legacy calls; `/tts:setup` asks | `true` = deterministic per-project voices, `false` = one shared `voice.name` for all projects |
+| `gender_preference` | `balanced` | `balanced` · `female_only` · `male_only` · `female_preferred` · `male_preferred` |
+| `preferred_ratio` | `0.5` | `0.5` for balanced, `1.0` for locked only, `0.8` for mostly preferred policies |
+| `gender_enforced` | engine-dependent | `true` only when the selected engine has bundled gender metadata |
+| `pool` | engine-dependent | materialized assignment slots used by `sha256(project_label) % len(pool)` |
+
+`/tts:setup` asks two questions: whether voices should vary per project or stay
+shared across all projects, and whether gender should be balanced, locked to
+female/male, or mostly female/male. "Mostly" is materialized as an 80/20
+preferred/opposite-gender pool; repeated voice IDs are expected weighting slots.
+Changing the generated pool can remap projects and requires a daemon restart.
+
+Only `edge-tts` and `kokoro` have explicit bundled female/male catalogs in this
+plugin, so only those engines can enforce per-project gender policy. With `say`,
+`espeak`, or `voicebox`, setup keeps `project_voices.enabled=false` and uses the
+shared `voice.name`.
+
 ### `llm_provider` — the judge/summarize brain
 | Key | Default | Notes |
 |-----|---------|-------|
