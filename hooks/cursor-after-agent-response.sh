@@ -79,5 +79,5 @@ finally:
 " 2>>"$LOG_FILE"
 ) &
 
-log "stop_event dispatched"
+log "stop_event dispatch STARTED (async; the child logs the outcome)"
 exit 0
