@@ -6,6 +6,19 @@ All notable changes to claude-tts are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.10] — 2026-10-11
+
+### Fixed
+- The Stop-hook integration test is hermetic and self-diagnosing. It built its
+  child environment as `dict(os.environ, ...)`, inheriting every `CLAUDE_TTS_*`
+  variable from the developer's shell and from anything that ran earlier in the
+  same pytest session — so it passed locally and went red on CI (v0.1.9's
+  `tests` workflow) reporting only `assert 0 == 2`. The hook has four silent
+  early-exit branches and writes its reason to a log file; the test now passes
+  an explicit minimal environment and, on any failure, reports the hook's
+  return code, stdout, stderr and that log. Test-only — no change to shipped
+  behaviour from 0.1.9.
+
 ## [0.1.9] — 2026-10-11
 
 ### Fixed

@@ -265,7 +265,18 @@ def test_subagent_transcript_path_alone_is_silent():
 def test_stop_hook_forwards_subagent_markers(tmp_path):
     """Run the REAL speech_output_hook.sh against a fake socket and assert the
     daemon-bound payload carries agent_id/agent_type when the Stop payload had
-    them (and omits them otherwise)."""
+    them (and omits them otherwise).
+
+    HERMETIC ON PURPOSE. An earlier version built the child environment as
+    `dict(os.environ, ...)`, so it inherited every CLAUDE_TTS_* variable from
+    the developer's shell and from anything that ran earlier in the same pytest
+    session -- it passed locally and went red on CI with nothing but
+    `assert 0 == 2` to go on. The hook has four silent early-exit branches
+    (TTS disabled, no python3, missing socket, empty content) and writes its
+    reason to a log file, so every failure here reports the hook's stdout,
+    stderr, and that log. A test that reaches outside the process has to be
+    able to say WHY it failed.
+    """
     import json, os, shutil, socket, subprocess, tempfile, threading
     hook = PROJECT_ROOT / "hooks" / "speech_output_hook.sh"
     tr = tmp_path / "t.jsonl"
@@ -274,24 +285,55 @@ def test_stop_hook_forwards_subagent_markers(tmp_path):
     # AF_UNIX paths are capped at ~104 bytes on macOS; pytest's tmp_path is deeper.
     sock_dir = tempfile.mkdtemp(prefix="ttsg-", dir="/tmp")
     sock_path = os.path.join(sock_dir, "s.sock")
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); srv.bind(sock_path); srv.listen(2)
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); srv.bind(sock_path); srv.listen(4)
+    srv.settimeout(20)
     got = []
     def serve(n):
         for _ in range(n):
-            c, _a = srv.accept(); got.append(c.recv(65536)); c.sendall(b"{}\n"); c.close()
+            try:
+                c, _a = srv.accept()
+            except OSError:
+                return
+            got.append(c.recv(65536)); c.sendall(b"{}\n"); c.close()
     th = threading.Thread(target=serve, args=(2,), daemon=True); th.start()
-    env = dict(os.environ, CLAUDE_TTS_SOCKET=sock_path, HOME=str(tmp_path))
+    # Explicit, minimal environment: nothing inherited but the search path the
+    # hook needs to find python3/jq/date.
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+        "HOME": str(tmp_path),
+        "CLAUDE_TTS_SOCKET": sock_path,
+        "CLAUDE_TTS_ENABLED": "true",
+    }
+    runs = []
     for extra in ({"agent_id": "abc123", "agent_type": "Explore"}, {}):
-        payload = {"session_id": "s1", "transcript_path": str(tr), "stop_hook_active": False, **extra}
-        subprocess.run(["sh", str(hook)], input=json.dumps(payload).encode(), env=env,
-                       capture_output=True, timeout=20)
-    th.join(timeout=15)
+        payload = {"session_id": "s1", "transcript_path": str(tr),
+                   "stop_hook_active": False, **extra}
+        runs.append(subprocess.run(
+            ["sh", str(hook)], input=json.dumps(payload).encode(), env=env,
+            capture_output=True, timeout=30))
+    th.join(timeout=25)
     srv.close(); shutil.rmtree(sock_dir, ignore_errors=True)
-    assert len(got) == 2, got
+
+    def _why():
+        """The hook's own account of what it did -- the part CI could not see."""
+        logs = sorted((tmp_path / ".claude" / "logs" / "hooks").glob("*.log"))
+        parts = [
+            f"run{i}: rc={r.returncode} "
+            f"stdout={r.stdout[:400]!r} stderr={r.stderr[:800]!r}"
+            for i, r in enumerate(runs)
+        ]
+        parts += [f"hooklog {p.name}: {p.read_text()[:1200]!r}" for p in logs]
+        if not logs:
+            parts.append("hooklog: NONE WRITTEN (hook exited before logging)")
+        return "\n".join(parts)
+
+    assert len(got) == 2, f"hook made {len(got)} of 2 daemon connections.\n{_why()}"
     sent = [json.loads(g.decode().strip()) for g in got]
     with_markers = [m for m in sent if m.get("agent_id")]
-    assert len(with_markers) == 1 and with_markers[0]["agent_type"] == "Explore"
-    assert all("agent_id" not in m for m in sent if m is not with_markers[0])
+    assert len(with_markers) == 1 and with_markers[0]["agent_type"] == "Explore", (
+        f"expected exactly one marked payload, got {sent}\n{_why()}")
+    assert all("agent_id" not in m for m in sent if m is not with_markers[0]), (
+        f"markers leaked onto the unmarked payload: {sent}")
 
 
 # --------------------------------------- 5. round-two audit findings
