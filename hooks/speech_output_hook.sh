@@ -17,7 +17,7 @@
 OUTPUT=$(cat)
 
 # Always echo the output first (passthrough behavior)
-echo "$OUTPUT"
+printf '%s\n' "$OUTPUT"   # printf, not echo: sh's echo eats backslashes and corrupts the JSON passthrough
 
 # Skip if TTS is disabled
 TTS_ENABLED="${CLAUDE_TTS_ENABLED:-true}"
@@ -122,6 +122,13 @@ payload_out = {
     'event_id': str(uuid.uuid4()),
     'ts': time.time(),
 }
+
+# Subagent markers (Claude Code stamps these inside Agent/Workflow subagents;
+# Stop becomes SubagentStop there). Forward them so the daemon's
+# 'subagent context: silent by policy' gate applies to stop events too.
+for k in ('agent_id', 'agent_type'):
+    if isinstance(payload, dict) and payload.get(k):
+        payload_out[k] = payload[k]
 
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.settimeout(3.0)

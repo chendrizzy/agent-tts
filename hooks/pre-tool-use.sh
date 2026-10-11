@@ -25,16 +25,21 @@
 #   - ANNOUNCE-02: if no allowlist match, exit silently (no generic fallback)
 #   - More substantive announcements: runner + target file basename or dir
 
-INPUT=$(cat)
-# Cursor wrappers set CLAUDE_TTS_PASSTHROUGH=false so postToolUse stdout stays clean.
-if [[ "${CLAUDE_TTS_PASSTHROUGH:-true}" == "true" ]]; then
-    echo "$INPUT"
-fi
+# PreToolUse stdout is Claude Code's hook protocol, not a passthrough channel.
+# Empty stdout + exit 0 = no opinion (fail open). Do not echo $INPUT and do
+# not emit Cursor's {"permission":"allow"} — both fail Claude Code schema
+# checks ("invalid JSON") on every matching tool, in every agent.
+# Quarantine later TTS chatter on stderr so it cannot corrupt the protocol.
+set +e
+INPUT=$(cat 2>/dev/null || printf '%s' '{}')
+exec 1>&2
 
 TTS_ENABLED="${CLAUDE_TTS_ENABLED:-true}"
 [[ "$TTS_ENABLED" != "true" ]] && exit 0
 
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
+# Parse the tool name from the payload we already buffered. Never echo $INPUT
+# to stdout — stdout belongs to the permission protocol response above.
+TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
 
 # Session id MUST come from the JSON payload — Claude Code does NOT set
 # CLAUDE_SESSION_ID as an env var.

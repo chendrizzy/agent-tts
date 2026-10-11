@@ -179,6 +179,7 @@ _BOX_RE = re.compile(r"[─-╿▀-▟☀-⛿•·]")
 # tests/fixtures/spoken_corpus/_generate.py).
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")                 # CSI/SGR colour & cursor codes
 _DIFF_HUNK_RE = re.compile(r"@@[^@\n]*@@")                       # @@ -1,5 +1,7 @@
+_CARET_MARKER_RE = re.compile(r"(?<!\S)[~^]{2,}(?!\S)")           # Py3.11+ traceback carets: ~~~~^^
 _UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
@@ -281,6 +282,7 @@ def _strip_code_artifacts(line: str) -> str:
     residue is swept. Pure + idempotent (every output maps to itself)."""
     line = _ANSI_RE.sub("", line)            # terminal colour/cursor codes -> gone
     line = _DIFF_HUNK_RE.sub(" ", line)
+    line = _CARET_MARKER_RE.sub(" ", line)   # traceback caret underline -> gone
     # ISO-8601 timestamps ("2026-05-04T22:06:50Z") before the hash-chain rule, so
     # the pure-digit date half isn't left behind. Bare dates "2024-01-15" lack
     # the T-time/Z and are untouched (date_dashes_kept).

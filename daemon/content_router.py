@@ -73,6 +73,12 @@ BASH_AMBIGUOUS_MIN_CHARS = 40
 
 # Recent content-hash dedupe window
 RECENT_HASH_LIMIT = 50
+# ERROR-branch dedupe window: the two hook wirings deliver the same event
+# <1s apart (p50 0.06s); a re-run of the same failing command inside this
+# window is the same news. Per session, time-based — unlike the global
+# 50-entry _recent_hashes ring, an identical error hours later or in another
+# project speaks again.
+ERROR_DEDUPE_WINDOW_S = 30.0
 
 # Per-session recently-spoken window for the LLM-judge context signal. Small and
 # bounded: we only care about the immediate "did we just say this?" horizon, not
@@ -124,6 +130,61 @@ ERROR_KEYWORDS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Words that flag a result as an error even when stderr is empty.
+# Word boundaries prevent matching inside identifiers like "ferror".
+# `panic\w*` catches both "panic" and "panicked"; same for `fail\w*`/`error\w*`/
+# `denied?`/`exception\w*` — covers verb tenses without false-broadening.
+_TRACEBACK_HEADER = "Traceback (most recent call last)"
+# The exception line that ends a Python traceback: `KeyError: 'k'`,
+# `urllib.error.HTTPError: 404`, `SystemExit: 1`, `KeyboardInterrupt`.
+_EXC_LINE_RE = re.compile(r"^(?:\w+\.)*\w*(?:Error|Exception|Exit|Interrupt|Warning)\w*\b")
+# Per-line decoration in front of traceback text: docker-compose / kubectl
+# "web-1  | ", Py3.11 ExceptionGroup "  | " / "  + ".
+_LINE_DECOR_RE = re.compile(r"^(?:\S+[ \t]+\|[ \t]?|[ \t]*[|+][ \t]?)")
+_FRAME_RE = re.compile(r'File "([^"]+)", line (\d+)')
+
+# PART-A #2 (2026-07-04): a REAL failure signal on STDOUT, as opposed to an
+# error keyword sitting inside file content / a filename / a JSON value / a path
+# token. Claude Code does NOT expose an exit code (tts_types.py:109), so the only
+# available signal is a genuine error LINE. This is a curated allowlist of the
+# structural shapes real crashes print (matched anywhere for the distinctive
+# ones, line-anchored for the ambiguous "error:" prefix so a quoted "error": in
+# JSON can't trip it). It replaces the old bare-keyword ERROR trigger on stdout,
+# which mislabeled `"error": null`, `['error', ...]`, `755 error_handler.py`,
+# grep hits, and git diffs as failures. stderr-sourced ERROR is unchanged — a
+# non-empty error stream is itself the signal.
+GENUINE_ERROR_LINE_RE = re.compile(
+    r"(?im)(?:"
+    # python traceback header — only when a frame line follows (a header quoted
+    # inside source/docs, or left alone by `| head -1`, is not an error)
+    r"\bTraceback \(most recent call last\):?[^\n]*\n(?:[^\n]*\n){0,2}?[^\n]*\bFile \"[^\n]*\", line \d+"
+    # FooError: / Exception: on a line that (a) starts at column 0 — interpreters,
+    # pytest ("FAILED x - AssertionError: …", "E   TypeError: …"), Java, Node all
+    # print it unindented, while `sed -n`/`cat` source is indented; (b) is not a
+    # `grep -rn` "file.py:NN:" line; (c) does not START with `except` (module-
+    # level `except Exception:` sits at column 0; a SyntaxError whose message
+    # mentions 'except' must still count). CamelCase is case-sensitive so prose
+    # "no exception: …" stays silent.
+    r"|(?-i:^(?=\S)(?![\w./-]*\.\w+:\d+:)(?!except\b)"
+    r"[^\n]*?\b\w*(?:Error|Exception):\s)"
+    # log-format errors: "2026-08-31 11:46:56 [VST] ERROR: failed…", "ERROR:root:…",
+    # "[ERROR] …" — uppercase only, so prose 'error handling' never matches.
+    r"|(?-i:^(?=\S)(?![\w./-]*\.\w+:\d+:)[^\n]*?\bERROR[:\]])"
+    r"|^\s*(?:error|fatal|panic)(?:\[[^\]]*\])?:\s"    # error: / error[E0308]: / fatal: / panic:
+    # compiler / script diagnostics: "main.swift:210:71: error: …",
+    # "a.c:3:5: fatal error: …", osascript "procs: 40:103: execution error: …"
+    # + flake8/pyflakes "x.py:1:5: E999 SyntaxError: invalid syntax"
+    r"|^\S+:\s?\d+(?::\d+)?:\s+(?!except\b)(?:\w+ )?(?:error|\w*Error):\s"
+    r"|\bpanicked\b"                                   # rust panic ("panicked at ...")
+    r"|\bnpm ERR!"                                     # npm error prefix
+    r"|\bno such file or directory\b"                  # shell: missing file
+    r"|\bcommand not found\b"                          # shell: missing command
+    r"|\bpermission denied\b"                          # shell / filesystem permission
+    r"|\bsegmentation fault\b"
+    r"|\bcore dumped\b"
+    r")"
+)
+
 # Insight markers — catch the canonical "★ Insight" tag plus the natural
 # phrasings the assistant tends to use when realizing something.
 INSIGHT_MARKER_RE = re.compile(r"★\s*Insight", re.IGNORECASE)
@@ -161,6 +222,14 @@ CODE_FENCE_RE = re.compile(r"^\s*```")
 
 # System-reminder tags — never speak these.
 SYSTEM_REMINDER_RE = re.compile(r"<\s*system[-_]reminder", re.IGNORECASE)
+
+# Harness / API boilerplate that a headless or quota-starved session emits as
+# its whole "answer" — never worth speaking.
+API_BOILERPLATE_RE = re.compile(
+    r"^\s*(?:API Error\b|Credit balance is too low|You've hit your \w+ limit"
+    r"|Rate limit(?:ed| exceeded)|Request (?:timed out|failed))",
+    re.IGNORECASE,
+)
 
 # File-path-only content (e.g., "src/foo/bar.py") — usually paste-noise.
 PATH_ONLY_RE = re.compile(r"^[\w./\\\-]+\.\w{1,8}$")
@@ -438,6 +507,8 @@ class ContentRouter:
 
         # Recent-hash dedupe — bounded deque, accepts benign concurrency races.
         self._recent_hashes: deque[str] = deque(maxlen=RECENT_HASH_LIMIT)
+        # (session_id, content_hash) -> monotonic stamp; see ERROR_DEDUPE_WINDOW_S.
+        self._recent_errors: dict[tuple[str, str], float] = {}
 
         # Consecutive-tail guard: cap utterances that share an identical LAST
         # line at 2 in a row, dropping the 3rd+. Whole-content dedupe above keys
@@ -692,6 +763,20 @@ class ContentRouter:
         if not isinstance(event, dict):
             return self._silence(event, reason="event is not a dict")
 
+        # Subagent context: Claude Code stamps agent_id on every hook payload
+        # fired inside an Agent/Workflow subagent (absent for the main agent),
+        # and keeps subagent transcripts under <session>/subagents/. NOT
+        # agent_type: that is also set for a main session started with
+        # `claude --agent <name>`. Subagent tool telemetry is silent by policy —
+        # its finding reaches the user through the parent's prose (Stop path),
+        # the same north star as _extract_grep. Without this, a 16-agent
+        # workflow spoke every `sed -n`/`2>&1` line that looked like an error.
+        if (
+            event.get("agent_id")
+            or "/subagents/" in str(event.get("transcript_path") or "")
+        ):
+            return self._silence(event, reason="subagent context: silent by policy")
+
         command = event.get("command")
         if command == "stop_event":
             return self._classify_stop(event)
@@ -816,14 +901,45 @@ class ContentRouter:
         elif (
             not stdout_looks_like_tests
             and stdout
-            and ERROR_KEYWORDS_RE.search(stdout)
+            and GENUINE_ERROR_LINE_RE.search(stdout)
             and not _is_error_false_positive(stdout)
         ):
+            # PART-A #2: a bare error KEYWORD in stdout is not a failure — it is
+            # usually file content, a filename, a JSON value, or a path token
+            # (`"error": null`, `755 error_handler.py`, `['error', ...]`). Require
+            # a genuine error LINE (Traceback / FooError: / error: / panicked /
+            # npm ERR! / command not found / permission denied). Non-error stdout
+            # then falls through to _drop_check_raw / the extractors as normal.
             is_error = True
             error_content = self._extract_error_snippet(stdout)
 
         if is_error:
             content = error_content.strip() or "tool reported an error"
+            # A traceback's spoken line is its exception line, never the header
+            # ("Traceback (most recent call last):" was the #1 spoken text).
+            if _TRACEBACK_HEADER in content:
+                content = self._extract_error_snippet(content) or (
+                    "tool was interrupted" if interrupted else "tool reported an error"
+                )
+            # Dedupe — the ERROR branch was the only speak path that skipped it,
+            # so double-delivered hook events (settings.json + plugin hooks.json
+            # both wire PostToolUse) were spoken twice. Windowed + per session so
+            # it catches the twin and rapid re-runs without the global ring's
+            # "same error in another project hours later is silent" semantics.
+            key = (event.get("session_id") or "default", _hash_content(content))
+            now = time.monotonic()
+            last = self._recent_errors.get(key)
+            if last is not None and now - last < ERROR_DEDUPE_WINDOW_S:
+                return self._silence(
+                    event, reason=f"duplicate error within {ERROR_DEDUPE_WINDOW_S:.0f}s"
+                )
+            self._recent_errors[key] = now
+            if len(self._recent_errors) > 256:
+                cutoff = now - ERROR_DEDUPE_WINDOW_S
+                for k in [k for k, t in self._recent_errors.items() if t < cutoff]:
+                    del self._recent_errors[k]
+                while len(self._recent_errors) > 256:
+                    del self._recent_errors[next(iter(self._recent_errors))]
             # ERRORs aren't aggressively summarized; only summarize if very long.
             needs_sum = len(content) >= self.summarize_threshold * 3
             return self._make_decision(
@@ -1344,8 +1460,45 @@ class ContentRouter:
         return "", ""
 
     def _extract_error_snippet(self, stdout: str) -> str:
-        """Return the first line containing an error keyword (with trailing context)."""
-        for line in stdout.splitlines():
+        """The ONE line worth speaking from error output.
+
+        Python traceback: the exception line (last column-0 `FooError: …` after
+        the header — chained tracebacks end on the outermost one), never the
+        header. Otherwise the line that tripped GENUINE_ERROR_LINE_RE, else the
+        first keyword-bearing line, else the first non-empty line.
+        """
+        lines = stdout.splitlines()
+        if _TRACEBACK_HEADER in stdout:
+            # Strip per-line decoration (docker "web-1  | ", ExceptionGroup
+            # "  | " / "  + ") so column-0 means "not a frame".
+            core = [_LINE_DECOR_RE.sub("", ln) for ln in lines]
+            last_hdr = max(i for i, ln in enumerate(core) if _TRACEBACK_HEADER in ln)
+            cands = [
+                ln for ln in core[last_hdr + 1:]
+                if ln and not ln[0].isspace()
+                and _TRACEBACK_HEADER not in ln
+                and not ln.startswith(("During handling", "The above exception"))
+            ]
+            # The exception line is the FIRST column-0 line after the LAST
+            # header's frames (chained tracebacks end on the outermost one);
+            # trailer lines after it are never the exception.
+            typed = [ln for ln in cands if _EXC_LINE_RE.match(ln)]
+            if typed:
+                return typed[0].strip()
+            if cands:
+                return cands[0].strip()
+            # Truncated (frames only, e.g. `| head`): name the innermost frame.
+            frames = [m for ln in core[last_hdr + 1:] if (m := _FRAME_RE.search(ln))]
+            if frames:
+                path, n = frames[-1].group(1), frames[-1].group(2)
+                return f"error at {path.rsplit('/', 1)[-1]} line {n}"
+            return ""  # header with nothing after it: nothing worth saying
+        # Never let a bare header be the snippet on the non-traceback paths.
+        lines = [ln for ln in lines if _TRACEBACK_HEADER not in ln]
+        for line in lines:
+            if GENUINE_ERROR_LINE_RE.search(line):
+                return line.strip()
+        for line in lines:
             if ERROR_KEYWORDS_RE.search(line):
                 return line.strip()
         # Fallback: first non-empty line.
@@ -1371,6 +1524,8 @@ class ContentRouter:
             return "empty content"
         if SYSTEM_REMINDER_RE.search(content):
             return "system-reminder content"
+        if len(content) < 300 and API_BOILERPLATE_RE.match(content):
+            return "harness/API boilerplate"
         # Boilerplate openers — but ONLY when the opener IS essentially the
         # whole message (pure filler like "Let me check."). RECALL FIX
         # 2026-06-19: a long answer that merely *opens* with "I'll…/Here's…/

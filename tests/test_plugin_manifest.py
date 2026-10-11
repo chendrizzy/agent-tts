@@ -122,6 +122,24 @@ def test_no_pii_in_new_shell_files():
             assert needle not in text, f"PII '{needle}' leaked into {path}"
 
 
+def test_no_pii_in_shipped_hooks():
+    """Every hook script, enumerated by GLOB, not by a hand-kept list.
+
+    NEW_SHELL_FILES above needs a line per file, so a newly shipped hook simply
+    is not scanned — hooks/ held 8 scripts and the gate covered none of them.
+    Hooks are the highest-risk surface for a leaked personal path because they
+    hardcode interpreters and socket paths. Globbing makes the gate unskippable.
+    Scoped to hooks/ on purpose: daemon/ legitimately uses `mlx_python` and
+    `profile_id` as API parameter names, which PII_FORBIDDEN matches verbatim.
+    """
+    hooks = sorted((ROOT / "hooks").glob("*.sh"))
+    assert hooks, "no hook scripts found — wrong ROOT?"
+    for path in hooks:
+        text = path.read_text(encoding="utf-8")
+        for needle in PII_FORBIDDEN:
+            assert needle not in text, f"PII '{needle}' leaked into {path}"
+
+
 def test_hooks_json_is_portable():
     assert HOOKS_JSON.is_file(), f"missing {HOOKS_JSON}"
     data = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))

@@ -6,6 +6,59 @@ All notable changes to claude-tts are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.9] — 2026-10-11
+
+### Fixed
+- **Subagent tool telemetry is now silent by policy.** When the main agent
+  delegates to Agent/Workflow subagents, Claude Code fires a full set of hook
+  events inside each one. The router never looked at them, so a parallel
+  workflow narrated every helper's `Bash` output — overwhelmingly fragments of
+  `sed`/`grep` text that merely *looked* like errors. The gate reads
+  `agent_id` (stamped only inside a subagent) and the `/subagents/` transcript
+  path, deliberately **not** `agent_type`, which is also set for a main session
+  started with `claude --agent <name>`. A subagent's actual finding still
+  reaches you, through the parent's turn-summary prose.
+- **Errors are no longer spoken twice.** `~/.claude/settings.json` and the
+  installed plugin's `hooks.json` both wire `PostToolUse`, so every event is
+  delivered twice ~0.06s apart. Every speak path deduped except the ERROR
+  branch, which had none. Added a per-session, time-windowed error dedupe
+  (`ERROR_DEDUPE_WINDOW_S`, 30s) — it catches the twin delivery and a rapid
+  re-run, while an identical failure hours later or in another project still
+  speaks, because live narration is not a log.
+- **A traceback now speaks its exception line, not its header.**
+  `_extract_error_snippet` returned the first keyword-bearing line; for a Python
+  traceback that is the fixed `Traceback (most recent call last):` boilerplate.
+  It now returns the exception line after the *last* header (so chained
+  tracebacks end on the outermost one), handles per-line decoration from
+  `docker compose`/`kubectl`/`ExceptionGroup`, and names the innermost frame
+  when the trace was truncated by a pipe.
+- **A bare error keyword on stdout is no longer treated as a failure.** Claude
+  Code exposes no exit code, so stdout was scanned for error *keywords* —
+  which mislabeled `"error": null`, `['error', ...]`, `755 error_handler.py`,
+  `grep` hits and diffs as crashes. Replaced with `GENUINE_ERROR_LINE_RE`, a
+  curated allowlist of the structural shapes real failures print. stderr-sourced
+  errors are unchanged: a non-empty error stream is itself the signal.
+- **`hooks/ensure-daemon-ready.sh` is now shipped.** `post-tool-use.sh` and
+  `cursor-after-agent-response.sh` both `source` it, so every public install
+  emitted a "No such file or directory" to stderr on every tool event. The
+  script existed in development and was never packaged. Shipping it also
+  restores the audio-staleness warning that
+  `tests/test_phase5_observability.py` already asserted.
+- `PreToolUse` hooks emit empty stdout instead of a passthrough or a
+  `{"permission":"allow"}` verdict — both fail Claude Code's hook schema.
+- Python 3.11+ traceback caret underlines (`~~~~^^`) normalize away instead of
+  being spoken as punctuation.
+- Harness/API boilerplate ("Credit balance is too low", "API Error: 529 …",
+  rate-limit notices) is dropped rather than read aloud as a turn summary.
+- The Stop hook forwards `agent_id`/`agent_type` to the daemon, so the subagent
+  policy applies to turn-end events too, and writes its JSON passthrough with
+  `printf` instead of `echo`, which ate backslashes.
+
+### Changed
+- The hooks PII gate enumerates `hooks/*.sh` by glob instead of a hand-kept
+  list, which had grown to cover the manifests and commands while scanning none
+  of the eight shipped hook scripts.
+
 ## [0.1.8] — 2026-08-17
 
 ### Added
