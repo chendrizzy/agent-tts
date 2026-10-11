@@ -78,9 +78,18 @@ class _FakeDaemon:
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
+def _have(cmd: str) -> bool:
+    return shutil.which(cmd, path=STOCK_PATH) is not None
+
+
 def _run_hook(script: Path, payload: dict, home: Path, sock: str):
+    # `bash`, not `sh`: every hook carries #!/bin/bash and hooks.json invokes
+    # `bash ${CLAUDE_PLUGIN_ROOT}/hooks/...`. Running them with `sh` tests a
+    # contract the product does not make -- on Ubuntu, where /bin/sh is dash,
+    # it reports "[[: not found" for legitimate bash. See
+    # test_hooks_are_invoked_as_bash_everywhere below, which pins this.
     return subprocess.run(
-        ["sh", str(script)],
+        ["bash", str(script)],
         input=json.dumps(payload).encode(),
         env={
             "PATH": STOCK_PATH,
@@ -129,7 +138,14 @@ def test_stop_hook_delivers_on_a_stock_path(tmp_path):
 
 
 def test_post_tool_hook_delivers_on_a_stock_path(tmp_path):
-    """The tool-event path must reach the daemon with no Homebrew on PATH."""
+    """The tool-event path must reach the daemon with no Homebrew on PATH.
+
+    This hook needs `jq`. Stock macOS ships it (/usr/bin/jq) and macOS is the
+    primary platform, but minimal Linux images do not. Rather than skip there,
+    assert the honest-degradation contract: say why in the log, and do not
+    claim a delivery that did not happen. That second half is the behaviour
+    whose absence hid the `timeout` outage for three releases.
+    """
     daemon = _FakeDaemon(expect=1)
     proc = _run_hook(
         HOOKS / "post-tool-use.sh",
@@ -145,11 +161,23 @@ def test_post_tool_hook_delivers_on_a_stock_path(tmp_path):
         tmp_path, daemon.path,
     )
     daemon.close()
+    log = _hook_log(tmp_path)
+    if not _have("jq"):
+        assert "jq unavailable" in log, (
+            "jq is absent, so the hook must say so in its log instead of "
+            f"failing mutely. log: {log[:800]!r}"
+        )
+        assert not daemon.received, "delivered without jq — impossible"
+        return
     assert len(daemon.received) >= 1, (
         "post-tool hook delivered nothing on a stock PATH — the daemon "
         f"received {len(daemon.received)} messages.\n"
         f"rc={proc.returncode} stderr={proc.stderr[:600]!r}\n"
-        f"hook log: {_hook_log(tmp_path)[:1200]!r}"
+        f"hook log: {log[:1200]!r}"
+    )
+    assert "dispatch STARTED" in log, (
+        "the shell must log that it STARTED a dispatch, never that one "
+        f"completed — it cannot know. log: {log[:800]!r}"
     )
 
 
@@ -227,3 +255,41 @@ def test_hooks_avoid_commands_absent_on_a_target_platform():
         "hooks call commands that are missing on a target platform and are not "
         "guarded by their own `command -v` probe:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_hooks_are_invoked_as_bash_everywhere():
+    """The hooks are bash, and every invocation path must agree.
+
+    They use `[[ ]]`, `&>`, and `<<<` — all bash, none POSIX. That is fine
+    while they are run with bash, which hooks.json does. It stops being fine
+    the moment any invocation switches to `sh`: on every Linux install
+    /bin/sh is dash, and the breakage is a stderr line the user never sees.
+    Pinned here because this test file itself got it wrong first.
+    """
+    manifest = json.loads((HOOKS / "hooks.json").read_text())
+    commands = [
+        hook["command"]
+        for entries in manifest["hooks"].values()
+        for entry in entries
+        for hook in entry["hooks"]
+    ]
+    assert commands, "no hook commands found in hooks.json"
+    for cmd in commands:
+        assert cmd.split()[0] == "bash", (
+            f"hook invoked with {cmd.split()[0]!r}, not bash; the hooks use "
+            f"bash-only syntax that dash rejects: {cmd!r}"
+        )
+    for path in sorted(HOOKS.glob("*.sh")):
+        first = path.read_text().splitlines()[0]
+        assert first == "#!/bin/bash", (
+            f"{path.name} shebang is {first!r}; the hooks are bash scripts"
+        )
+
+
+def test_every_hook_is_valid_bash():
+    """`bash -n` on each hook. Catches a syntax error before a user hits it."""
+    for path in sorted(HOOKS.glob("*.sh")):
+        proc = subprocess.run(["bash", "-n", str(path)], capture_output=True)
+        assert proc.returncode == 0, (
+            f"{path.name} is not valid bash: {proc.stderr.decode()[:400]}"
+        )
