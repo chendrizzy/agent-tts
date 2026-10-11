@@ -40,7 +40,18 @@ All notable changes to claude-tts are documented here. Format follows
   throughout the outage — plus a source guard that fails on any command absent
   from a target platform and not shielded by its own `command -v` probe
   (`launchctl` is legitimately probed that way and still passes). Verified
-  binding by reintroducing the bug: 3 of the 4 tests fail.
+  binding by reintroducing the bug: 3 of its tests fail.
+
+  Getting that test right took three corrections, each a local-vs-CI
+  divergence of exactly the kind it exists to catch: it invoked the hooks with
+  `sh` when the product uses `bash` (dash rejects the hooks' 14 `[[ ]]` uses);
+  it assumed `jq`, which stock macOS ships but minimal Linux images do not, and
+  now asserts the honest-degradation path there instead of skipping; and its
+  fake daemon was a thread, which cannot satisfy `ensure-daemon-ready.sh`'s
+  "socket AND a live `tts_daemon.py` process" check — that hook unlinks a
+  socket it finds unattended, so the hook correctly skipped delivery. It
+  passed locally only because the author's real daemon was running. The fake
+  daemon is now a real process. The bash contract is pinned by its own test.
 
 ## [0.1.10] — 2026-10-11
 

@@ -28,7 +28,7 @@ import socket
 import subprocess
 import sys
 import tempfile
-import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -44,37 +44,86 @@ HOOKS = PROJECT_ROOT / "hooks"
 STOCK_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 
 
-class _FakeDaemon:
-    """A real AF_UNIX listener that records whole messages it receives."""
+# The listener runs from a file with this exact name because
+# ensure-daemon-ready.sh gates on `pgrep -f tts_daemon.py` and treats a socket
+# with no matching process as orphaned -- it unlinks it and the hook skips
+# delivery. A thread cannot satisfy that; a real process can.
+_FAKE_DAEMON_SRC = r"""
+import json, os, socket, sys
 
-    def __init__(self, expect: int):
+sock_path, out_path, expect = sys.argv[1], sys.argv[2], int(sys.argv[3])
+srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+srv.bind(sock_path)
+srv.listen(8)
+srv.settimeout(25)
+received = []
+try:
+    while len(received) < expect:
+        conn, _addr = srv.accept()
+        with conn:
+            data = conn.recv(65536)
+            if data:
+                received.append(data.decode("utf-8", "replace"))
+            try:
+                conn.sendall(b'{"status":"ok"}\n')
+            except OSError:
+                pass
+except Exception:
+    pass
+finally:
+    srv.close()
+    with open(out_path, "w") as fh:
+        json.dump(received, fh)
+"""
+
+
+class _FakeDaemon:
+    """A real `tts_daemon.py` process holding a real AF_UNIX socket.
+
+    Faithful to the hooks' precondition rather than a shortcut around it: the
+    hooks require a live process of that name, and will delete an unattended
+    socket.
+    """
+
+    def __init__(self, expect: int = 1):
         # AF_UNIX paths cap near 104 bytes; pytest's tmp_path is deeper.
         self.dir = tempfile.mkdtemp(prefix="ttsport-", dir="/tmp")
         self.path = os.path.join(self.dir, "d.sock")
-        self.received: list[bytes] = []
-        self._srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._srv.bind(self.path)
-        self._srv.listen(8)
-        self._srv.settimeout(20)
-        self._th = threading.Thread(target=self._serve, args=(expect,), daemon=True)
-        self._th.start()
-
-    def _serve(self, expect: int) -> None:
-        for _ in range(expect):
-            try:
-                conn, _addr = self._srv.accept()
-            except OSError:
+        self._out = os.path.join(self.dir, "received.json")
+        self._received: list[str] | None = None
+        script = os.path.join(self.dir, "tts_daemon.py")
+        with open(script, "w") as fh:
+            fh.write(_FAKE_DAEMON_SRC)
+        self._proc = subprocess.Popen(
+            [sys.executable, script, self.path, self._out, str(expect)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        # Wait for the socket to appear; a hook that arrives first sees no
+        # socket and correctly skips, which would be a false failure.
+        for _ in range(200):
+            if os.path.exists(self.path):
                 return
-            with conn:
-                self.received.append(conn.recv(65536))
-                try:
-                    conn.sendall(b'{"status":"ok"}\n')
-                except OSError:
-                    pass
+            time.sleep(0.05)
+        raise AssertionError("fake daemon never bound its socket")
 
-    def close(self, wait: float = 15.0) -> None:
-        self._th.join(timeout=wait)
-        self._srv.close()
+    @property
+    def received(self) -> list[str]:
+        # Snapshotted by close(), because close() removes the directory the
+        # results file lives in -- reading it afterwards always returned [].
+        if self._received is not None:
+            return self._received
+        if os.path.exists(self._out):
+            with open(self._out) as fh:
+                return json.load(fh)
+        return []
+
+    def close(self, wait: float = 25.0) -> None:
+        try:
+            self._proc.wait(timeout=wait)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.wait(timeout=5)
+        self._received = self.received
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
@@ -132,7 +181,7 @@ def test_stop_hook_delivers_on_a_stock_path(tmp_path):
         f"rc={proc.returncode} stderr={proc.stderr[:600]!r}\n"
         f"hook log: {_hook_log(tmp_path)[:1200]!r}"
     )
-    msg = json.loads(daemon.received[0].decode())
+    msg = json.loads(daemon.received[0])
     assert msg["command"] == "stop_event"
     assert msg["content"] == "the stop path is alive"
 
