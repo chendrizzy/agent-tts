@@ -5,6 +5,18 @@
 [![python: 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 [![local-first](https://img.shields.io/badge/local--first-token--free-success.svg)](#no-llm-fallback)
 
+> [!IMPORTANT]
+> **If you installed v0.1.10 or earlier on macOS and heard nothing, upgrade to
+> v0.1.11 — that was a bug, not your setup.** Every hook wrapped its inline
+> Python in GNU coreutils `timeout`, which macOS does not ship, so the hook
+> printed `timeout: command not found`, nothing reached the daemon, and it then
+> logged `dispatched` and exited 0. It only worked on machines with Homebrew
+> coreutils. Measured: with `PATH=/usr/bin:/bin` the daemon received 0 of 1
+> messages. [v0.1.11](https://github.com/chendrizzy/claude-tts/releases/tag/v0.1.11)
+> moves the ceiling inside the Python child and adds a CI test that runs the
+> real hooks on a stock `PATH`, asserting what the daemon *received* rather than
+> the hook's exit code — which was 0 throughout.
+
 **Hear your coding agent.** claude-tts speaks a *curated, filtered* stream of a
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agent's work — the
 status pivots, the errors, the final answers — and stays quiet through the noise.
