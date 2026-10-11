@@ -38,7 +38,14 @@ NORMALIZED=$("$PYTHON_BIN" "$PLUGIN_ROOT/hooks/cursor_normalize.py" agent_respon
 [ -n "$NORMALIZED" ] || exit 0
 
 (
-    printf '%s' "$NORMALIZED" | timeout 8 "$PYTHON_BIN" -c "
+    printf '%s' "$NORMALIZED" | "$PYTHON_BIN" -c "
+import os as _os, signal as _signal
+# Wall-clock ceiling, self-enforced. GNU coreutils 'timeout' is absent on stock
+# macOS, where wrapping this invocation in it meant the hook delivered nothing
+# at all. Armed before any work so it bounds file reads too, not just the
+# socket. Exit 75 (EX_TEMPFAIL) marks a ceiling hit.
+_signal.signal(_signal.SIGALRM, lambda *_a: _os._exit(75))
+_signal.setitimer(_signal.ITIMER_REAL, 8)
 import json, socket, sys, time, uuid
 
 raw = sys.stdin.read()

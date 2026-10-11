@@ -72,7 +72,14 @@ if len(first_sentence) <= 80:
 else:
     print(first_sentence[:77].rstrip() + '...')
 " "$QUESTION" 2>/dev/null)
-        timeout 3s "$PYTHON_BIN" -c "
+        "$PYTHON_BIN" -c "
+import os as _os, signal as _signal
+# Wall-clock ceiling, self-enforced. GNU coreutils 'timeout' is absent on stock
+# macOS, where wrapping this invocation in it meant the hook delivered nothing
+# at all. Armed before any work so it bounds file reads too, not just the
+# socket. Exit 75 (EX_TEMPFAIL) marks a ceiling hit.
+_signal.signal(_signal.SIGALRM, lambda *_a: _os._exit(75))
+_signal.setitimer(_signal.ITIMER_REAL, 3)
 import socket, json, sys
 try:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(2.0)
@@ -258,7 +265,14 @@ sys.exit(0)
 # kept this on the legacy path — see header comment for rationale.
 # (SOCKET_PATH already declared at top.)
 if [[ -S "$SOCKET_PATH" && -x "$PYTHON_BIN" ]]; then
-    timeout 3s "$PYTHON_BIN" -c "
+    "$PYTHON_BIN" -c "
+import os as _os, signal as _signal
+# Wall-clock ceiling, self-enforced. GNU coreutils 'timeout' is absent on stock
+# macOS, where wrapping this invocation in it meant the hook delivered nothing
+# at all. Armed before any work so it bounds file reads too, not just the
+# socket. Exit 75 (EX_TEMPFAIL) marks a ceiling hit.
+_signal.signal(_signal.SIGALRM, lambda *_a: _os._exit(75))
+_signal.setitimer(_signal.ITIMER_REAL, 3)
 import socket, json, sys
 try:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

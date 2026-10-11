@@ -6,6 +6,42 @@ All notable changes to claude-tts are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.11] — 2026-10-11
+
+### Fixed
+- **The plugin was silent on stock macOS. Every release until now.** Each hook
+  wrapped its inline Python in GNU coreutils `timeout`, which macOS does not
+  ship. On any Mac without a third-party coreutils install the shell printed
+  `timeout: command not found`, the Python never ran, nothing reached the
+  daemon — and the hook logged `stop_event dispatched` and exited 0. It worked
+  only on machines with Homebrew coreutils. Reproduced directly: with
+  `PATH=/usr/bin:/bin` the daemon received 0 messages; with Homebrew on `PATH`,
+  1. Six call sites across five hooks were affected, covering every delivery
+  path — pre-tool announcements, tool events, turn summaries and the Cursor
+  path. macOS is the primary platform, since the Kokoro engine is
+  Apple-Silicon-only.
+
+  The ceiling now lives inside the Python child (`signal.setitimer`), armed
+  before any other work, so it bounds the transcript read and scan as well as
+  the socket call — which the in-script socket timeout never did. Probing for
+  `timeout`/`gtimeout` and running bare when absent was rejected: it keeps the
+  ceiling where it is not needed and drops it on the platform that needs it.
+- **The hook logs no longer claim an outcome they cannot know.** Delivery runs
+  in a backgrounded subshell and cannot be awaited without stalling the agent,
+  so the shell now logs that a dispatch *started*, and the child — the only
+  party that learns the result — logs `DELIVERED ack=…` or `FAILED: …`. The
+  old unconditional "dispatched" line is what let this bug hide for three
+  releases.
+
+### Added
+- `tests/test_hook_portability.py`, in the binding `make verify` gate. It runs
+  the real hooks against a real socket with `PATH=/usr/bin:/bin` and asserts
+  what the **daemon received** — never the hook's exit code, which was 0
+  throughout the outage — plus a source guard that fails on any command absent
+  from a target platform and not shielded by its own `command -v` probe
+  (`launchctl` is legitimately probed that way and still passes). Verified
+  binding by reintroducing the bug: 3 of the 4 tests fail.
+
 ## [0.1.10] — 2026-10-11
 
 ### Fixed

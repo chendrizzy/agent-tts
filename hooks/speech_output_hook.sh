@@ -54,7 +54,14 @@ fi
 # then forwards as `stop_event`. If input is raw text (Notification path),
 # treat it as content directly.
 (
-    printf '%s' "$OUTPUT" | timeout 8 "$PYTHON_BIN" -c "
+    printf '%s' "$OUTPUT" | "$PYTHON_BIN" -c "
+import os as _os, signal as _signal
+# Wall-clock ceiling, self-enforced. GNU coreutils 'timeout' is absent on stock
+# macOS, where wrapping this invocation in it meant the hook delivered nothing
+# at all. Armed before any work so it bounds file reads too, not just the
+# socket. Exit 75 (EX_TEMPFAIL) marks a ceiling hit.
+_signal.signal(_signal.SIGALRM, lambda *_a: _os._exit(75))
+_signal.setitimer(_signal.ITIMER_REAL, 8)
 import sys, json, socket, time, uuid, os
 from pathlib import Path
 
@@ -135,11 +142,17 @@ s.settimeout(3.0)
 try:
     s.connect('$SOCKET')
     s.sendall((json.dumps(payload_out) + '\n').encode())
-    s.recv(4096)  # drain response
+    ack = s.recv(4096)
+    # Only the child learns whether delivery happened, so only the child may
+    # claim it. An ack in hand is the evidence; nothing else prints success.
+    sys.stderr.write('stop_event DELIVERED ack=%r\n' % (ack[:120],) if ack
+                     else 'stop_event FAILED: connected but no ack\n')
+except OSError as exc:
+    sys.stderr.write('stop_event FAILED: %s: %s\n' % (type(exc).__name__, exc))
 finally:
     s.close()
 " 2>>"$LOG_FILE"
 ) &
 
-log "stop_event dispatched"
+log "stop_event dispatch STARTED (async; the child logs the outcome)"
 exit 0
