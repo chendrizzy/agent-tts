@@ -1,20 +1,36 @@
-"""
-Tests for DAEMON-03: asyncio.to_thread wrap of legacy global audio lock.
+"""Cross-session playback serialization must serialize WITHOUT stalling the loop.
 
-These five tests implement the M0 anti-pattern guard per VERIFICATION.md B-2
-and 01-PLAN-03-fcntl-wrap.md.
+WHY THIS FILE WAS REWRITTEN (2026-10-11)
+The original five tests guarded a *mechanism*, not a property: a blocking fcntl
+lock, offloaded with asyncio.to_thread so it would not block the event loop.
+That mechanism was deliberately deleted (daemon/pipeline/playback_stage.py,
+"LEGACY-08: _acquire_legacy_global_lock, _release_legacy_global_lock — all
+deleted (Phase 3)"), replaced by an in-process asyncio.Lock. So all five tests
+asserted the existence of methods that no longer exist, and all five had been
+red since 2026-07-04 — unnoticed, because this file was not in `make verify`.
+It is now.
 
-Tests 3, 4, 5 are the critical M0 guards — they MUST FAIL on the original
-code (plain `with self._legacy_global_audio_lock()`) and PASS after the fix
-(`asyncio.to_thread(self._acquire_legacy_global_lock)` + try/finally).
+The property they were protecting is still load-bearing, and it has two halves
+that pull against each other:
 
-Run with: python3 -m pytest tests/test_playback_stage_legacy_lock.py -v
+  1. only ONE session's audio may play at a time (otherwise clips overlap), and
+  2. waiting for that must not stall the event loop (otherwise every other
+     session's hooks, timers and socket reads freeze while audio plays).
+
+A blocking lock satisfies (1) and destroys (2); no lock satisfies (2) and
+destroys (1). The tests below assert BOTH, against whatever primitive does the
+job today, and deliberately name no helper that a future refactor can delete out
+from under them. That is the mistake being corrected here: the old tests could
+not survive their own subject being renamed.
+
+Note this is weaker than the original in one honest respect — it no longer pins
+a specific call shape at a specific callsite, so a refactor that keeps both
+properties is free to proceed without touching this file. That is the intent.
 """
 import ast
 import asyncio
 import os
 import sys
-import threading
 import unittest
 from pathlib import Path
 
@@ -25,57 +41,85 @@ from daemon.pipeline.playback_stage import PlaybackStage, PlaybackState  # noqa:
 PLAYBACK = Path(__file__).resolve().parent.parent / "daemon" / "pipeline" / "playback_stage.py"
 
 
-class TestLegacyLockHelpers(unittest.IsolatedAsyncioTestCase):
-    """Test 1: acquire/release helpers exist and are thread-compatible."""
+class TestSerializationPrimitive(unittest.IsolatedAsyncioTestCase):
+    """The primitive must be awaitable, so waiting for it yields to the loop."""
 
-    async def test_acquire_helpers_exist_and_are_thread_compatible(self):
-        """Both _acquire_legacy_global_lock and _release_legacy_global_lock must exist
-        as callable attributes that can be invoked via asyncio.to_thread."""
+    async def test_cross_session_primitive_is_awaitable(self):
         stage = PlaybackStage()
-
-        self.assertTrue(
-            hasattr(stage, "_acquire_legacy_global_lock"),
-            "_acquire_legacy_global_lock method missing from PlaybackStage",
+        lock = getattr(stage, "_cross_session_audio_lock", None)
+        self.assertIsNotNone(
+            lock,
+            "PlaybackStage has no cross-session audio lock. Something must "
+            "serialize playback across sessions or concurrent sessions will "
+            "talk over each other.",
         )
-        self.assertTrue(
-            hasattr(stage, "_release_legacy_global_lock"),
-            "_release_legacy_global_lock method missing from PlaybackStage",
-        )
-        self.assertTrue(
-            callable(stage._acquire_legacy_global_lock),
-            "_acquire_legacy_global_lock is not callable",
-        )
-        self.assertTrue(
-            callable(stage._release_legacy_global_lock),
-            "_release_legacy_global_lock is not callable",
+        self.assertIsInstance(
+            lock, asyncio.Lock,
+            f"the cross-session audio lock is a {type(lock).__name__}, not an "
+            "asyncio.Lock. A blocking primitive (threading.Lock, fcntl.flock) "
+            "acquired on the event-loop thread freezes every other session for "
+            "the duration of playback. If a blocking lock is genuinely needed, "
+            "it must be awaited off-thread (asyncio.to_thread) — and then this "
+            "test needs rewriting, not deleting.",
         )
 
-        # Exercise both via to_thread to confirm they are compatible
-        lock_file = await asyncio.to_thread(stage._acquire_legacy_global_lock)
-        try:
-            pass
-        finally:
-            await asyncio.to_thread(stage._release_legacy_global_lock, lock_file)
+
+class TestNoBlockingLockInPlaybackModule(unittest.IsolatedAsyncioTestCase):
+    """Source guard: the playback module must not reach for a blocking lock."""
+
+    async def test_playback_module_imports_no_blocking_lock(self):
+        """Deny the IMPORT, not the call shape.
+
+        Denying `threading.Lock` textually was the first version of this, and a
+        mutation test walked straight through it: `import threading as _t` then
+        `_t.Lock()` matched nothing. Denying the import catches every alias and
+        every call shape at once, and costs nothing here because this module has
+        no legitimate use for either library — it is asyncio throughout.
+
+        Honest limit: this cannot see a blocking lock constructed elsewhere and
+        handed to PlaybackStage. The isinstance check above is what catches that.
+        """
+        tree = ast.parse(PLAYBACK.read_text())
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+
+        for forbidden in ("fcntl", "threading"):
+            self.assertNotIn(
+                forbidden, imported,
+                f"{PLAYBACK.name} imports {forbidden!r}, whose locks block the "
+                "calling thread — and this module runs on the event loop, so a "
+                "blocking acquire freezes every other session for the duration "
+                "of playback. The cross-process fcntl tier was deleted on "
+                "purpose (LEGACY-08): the daemon's singleton PID check already "
+                "guarantees one daemon per user. If you genuinely need one "
+                "back, it must be offloaded with asyncio.to_thread — and then "
+                "this test needs rewriting, not deleting.",
+            )
 
 
-class TestEventLoopNotStalled(unittest.IsolatedAsyncioTestCase):
-    """Test 2: event loop is not stalled during lock acquisition (tightened threshold)."""
+class TestSerializesAndDoesNotStall(unittest.IsolatedAsyncioTestCase):
+    """Both halves of the property, measured in one run."""
 
-    async def test_event_loop_is_not_stalled_during_lock_acquisition(self):
-        """Acquire the fcntl lock via to_thread while running a heartbeat concurrently.
-        The heartbeat must tick >= 20 times (out of 25 attempts at 0.02s each).
+    async def test_playback_serializes_without_stalling_the_event_loop(self):
+        """Both halves in one run — with one limitation worth knowing.
 
-        Without the to_thread wrap, time.sleep(0.05) blocks the event loop and
-        ticks would be ~0. With the fix, acquire runs in a worker thread, the
-        event loop stays free, and the heartbeat accumulates ~25 ticks.
-
-        Design: acquire lock in worker thread, release immediately (no contention),
-        then let heartbeat run to completion alongside the competitor.
-        The key assertion is on heartbeat ticks, proving the loop was unblocked
-        during the acquire busy-wait."""
+        If the lock is replaced by a genuinely BLOCKING one, this test HANGS
+        rather than fails: the first task blocks the loop thread, so the
+        `wait_for` timeout below can never fire. Measured, not assumed. That is
+        precisely why the two structural guards above exist and are not
+        redundant with this one — they turn that hang into a fast, readable
+        failure. This test's own binding is the other direction: delete the
+        serialization and it fails immediately with max_concurrent == 3.
+        """
         stage = PlaybackStage()
 
         ticks = 0
+        concurrent = 0
+        max_concurrent = 0
 
         async def heartbeat():
             nonlocal ticks
@@ -83,168 +127,41 @@ class TestEventLoopNotStalled(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.02)
                 ticks += 1
 
-        async def competitor():
-            # acquire then immediately release — tests that to_thread doesn't
-            # block the event loop during the busy-wait spin
-            lf = await asyncio.to_thread(stage._acquire_legacy_global_lock)
-            await asyncio.to_thread(stage._release_legacy_global_lock, lf)
+        async def fake_inner(audio_path, state=None, request_id=None):
+            # Stands in for real playback: holds the cross-session lock for a
+            # while. Real playback awaits a subprocess; this awaits a sleep.
+            nonlocal concurrent, max_concurrent
+            concurrent += 1
+            max_concurrent = max(max_concurrent, concurrent)
+            try:
+                await asyncio.sleep(0.15)
+                return True
+            finally:
+                concurrent -= 1
+
+        stage._play_audio_inner = fake_inner
 
         beat = asyncio.create_task(heartbeat())
-        comp = asyncio.create_task(competitor())
+        players = [
+            asyncio.create_task(stage._play_audio("/dev/null", PlaybackState()))
+            for _ in range(3)
+        ]
+        await asyncio.wait_for(asyncio.gather(beat, *players), timeout=10.0)
 
-        # Both tasks run concurrently; competitor's busy-wait must not stall heartbeat
-        await asyncio.wait_for(asyncio.gather(beat, comp), timeout=3.0)
-
+        # Half 1: serialization actually happened.
+        self.assertEqual(
+            max_concurrent, 1,
+            f"{max_concurrent} sessions played at once. The cross-session lock "
+            "is not serializing playback, so concurrent sessions will talk "
+            "over each other.",
+        )
+        # Half 2: and the event loop stayed free while they waited.
         self.assertGreaterEqual(
             ticks, 20,
-            f"Event loop was stalled: only {ticks}/25 heartbeat ticks landed. "
-            "to_thread offload of busy-wait did not free the event loop.",
-        )
-
-
-class TestASTSourceGuard(unittest.IsolatedAsyncioTestCase):
-    """Test 3 (M0 GUARD): AST-parse _play_audio — must use asyncio.to_thread, not plain with."""
-
-    async def test_play_audio_source_uses_to_thread_for_legacy_lock(self):
-        """Parse playback_stage.py with AST and assert:
-        1. _play_audio contains ZERO plain `with self._legacy_global_audio_lock()` calls.
-        2. _play_audio contains at least ONE asyncio.to_thread(self._acquire_legacy_global_lock) call.
-
-        This test FAILS on original code (line 357 uses plain `with`) and PASSES after
-        the DAEMON-03 fix. Guards against the M0 anti-pattern: docstring promises the fix
-        but code doesn't implement it."""
-        tree = ast.parse(PLAYBACK.read_text())
-
-        def find_func(node, name):
-            if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)) and node.name == name:
-                return node
-            for child in ast.iter_child_nodes(node):
-                f = find_func(child, name)
-                if f is not None:
-                    return f
-            return None
-
-        play_audio = find_func(tree, "_play_audio")
-        self.assertIsNotNone(play_audio, "_play_audio not found in playback_stage.py")
-
-        # Must have ZERO plain `with self._legacy_global_audio_lock()` calls
-        plain_with_legacy = [
-            n for n in ast.walk(play_audio)
-            if isinstance(n, ast.With)
-            and any(
-                isinstance(item.context_expr, ast.Call)
-                and isinstance(item.context_expr.func, ast.Attribute)
-                and item.context_expr.func.attr == "_legacy_global_audio_lock"
-                for item in n.items
-            )
-        ]
-        self.assertEqual(
-            len(plain_with_legacy), 0,
-            "_play_audio still uses plain `with self._legacy_global_audio_lock()` — "
-            "the asyncio.to_thread offload did not land at the observable callsite "
-            "(M0 anti-pattern: docstring promises fix, code does not implement it)",
-        )
-
-        # Must have at least ONE asyncio.to_thread(self._acquire_legacy_global_lock)
-        to_thread_acquires = [
-            n for n in ast.walk(play_audio)
-            if isinstance(n, ast.Call)
-            and isinstance(n.func, ast.Attribute)
-            and n.func.attr == "to_thread"
-            and any(
-                isinstance(arg, ast.Attribute) and arg.attr == "_acquire_legacy_global_lock"
-                for arg in n.args
-            )
-        ]
-        self.assertGreaterEqual(
-            len(to_thread_acquires), 1,
-            "_play_audio does not call asyncio.to_thread(self._acquire_legacy_global_lock); "
-            "the offload did not land at the observable callsite (M0 anti-pattern)",
-        )
-
-
-class TestAcquireRunsOffMainThread(unittest.IsolatedAsyncioTestCase):
-    """Test 4 (M0 GUARD): _play_audio must invoke _acquire_legacy_global_lock off the main thread."""
-
-    async def test_play_audio_runs_acquire_off_main_thread(self):
-        """Mock _acquire_legacy_global_lock and capture thread ID.
-        After await stage._play_audio(...), assert the acquire ran on a WORKER thread,
-        not the main asyncio loop thread.
-
-        This test FAILS on original code (no to_thread call; _acquire doesn't exist) and
-        PASSES after the DAEMON-03 fix."""
-        stage = PlaybackStage()
-        captured = {}
-
-        def fake_acquire():
-            captured["thread_id"] = threading.current_thread().ident
-            captured["thread_name"] = threading.current_thread().name
-            return None
-
-        def fake_release(lock_file):
-            pass
-
-        async def fake_inner(audio_path, state):
-            return True
-
-        stage._acquire_legacy_global_lock = fake_acquire
-        stage._release_legacy_global_lock = fake_release
-        stage._play_audio_inner = fake_inner
-
-        main_thread_id = threading.current_thread().ident
-        state = PlaybackState()
-        await stage._play_audio("/dev/null", state)
-
-        self.assertIsNotNone(
-            captured.get("thread_id"),
-            "_acquire_legacy_global_lock was never called during _play_audio",
-        )
-        self.assertNotEqual(
-            captured["thread_id"],
-            main_thread_id,
-            f"_acquire_legacy_global_lock ran on the main asyncio loop thread "
-            f"({captured.get('thread_name', '?')}); asyncio.to_thread offload did not happen",
-        )
-
-
-class TestReleaseRunsOffMainThread(unittest.IsolatedAsyncioTestCase):
-    """Test 5 (M0 GUARD): _play_audio must invoke _release_legacy_global_lock off the main thread."""
-
-    async def test_release_runs_off_main_thread(self):
-        """Symmetric to Test 4: mock _release_legacy_global_lock and assert it ran on a worker thread.
-
-        This test FAILS on original code (no to_thread call; _release doesn't exist) and
-        PASSES after the DAEMON-03 fix."""
-        stage = PlaybackStage()
-        captured = {}
-
-        def fake_acquire():
-            return None
-
-        def fake_release(lock_file):
-            captured["thread_id"] = threading.current_thread().ident
-            captured["thread_name"] = threading.current_thread().name
-
-        async def fake_inner(audio_path, state):
-            return True
-
-        stage._acquire_legacy_global_lock = fake_acquire
-        stage._release_legacy_global_lock = fake_release
-        stage._play_audio_inner = fake_inner
-
-        main_thread_id = threading.current_thread().ident
-        state = PlaybackState()
-        await stage._play_audio("/dev/null", state)
-
-        self.assertIsNotNone(
-            captured.get("thread_id"),
-            "_release_legacy_global_lock was never called during _play_audio",
-        )
-        self.assertNotEqual(
-            captured["thread_id"],
-            main_thread_id,
-            f"_release_legacy_global_lock ran on the main asyncio loop thread "
-            f"({captured.get('thread_name', '?')}); asyncio.to_thread offload did not happen",
+            f"event loop was stalled: only {ticks}/25 heartbeat ticks landed "
+            "while three sessions contended for the playback lock. Waiting for "
+            "audio must not freeze the loop — every other session's hooks, "
+            "timers and socket reads run on it.",
         )
 
 

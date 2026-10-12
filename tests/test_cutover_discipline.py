@@ -25,8 +25,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from daemon.content_router import ContentRouter, _SPEAKABLE_CATEGORIES  # noqa: E402
-from daemon.tts_types import Category, RouterDecision  # noqa: E402
 from daemon.providers.ollama_provider import OllamaProvider  # noqa: E402
+from daemon.tts_types import Category, RouterDecision  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -118,38 +118,48 @@ class TestLegacySpeakKillSwitch:
                 except Exception:
                     pass
 
-    def test_speak_rejected_when_legacy_disabled(self):
-        """When feature_flags.legacy_speak_enabled is false, speak returns rejected."""
-        config = {"feature_flags": {"legacy_speak_enabled": False}}
+    def test_legacy_speak_is_unreachable_whatever_the_flag_says(self):
+        """The cutover COMPLETED: there is no legacy speak path left to gate.
+
+        This replaces three tests written while the cutover was in progress —
+        one asserting the flag rejects `speak`, two asserting it is otherwise
+        "routed normally". All three are now wrong, and the way they were wrong
+        is the interesting part:
+
+          - the rejection test failed honestly (red since 2026-07-04, unnoticed
+            because this file was not in `make verify`; it is now), and
+          - the two "accepted" tests PASSED FOR THE WRONG REASON. They assert
+            `status != "rejected"`, and an unknown command answers
+            `status == "error"`, which satisfies that. They were green while
+            claiming a code path exists that had already been deleted.
+
+        A flag-gated kill switch is a weaker guarantee than deletion, so what is
+        asserted here is the stronger property the cutover actually achieved:
+        `speak` is refused no matter what the flag says. See the comment at
+        daemon/tts_daemon.py around the "Unknown command" default.
+
+        If this ever fails, a legacy speak path has been REINTRODUCED — that is
+        a second audio path with its own queue and lock semantics, which is
+        exactly what Phase 3 deleted. Do not re-add the flag to make it pass.
+        """
         msg = {"command": "speak", "text": "hello", "session_id": "s1"}
-        response = self._run_server_with_config(config, msg)
-
-        assert response.get("status") == "rejected", (
-            f"Expected 'rejected' but got: {response}"
-        )
-        assert "legacy" in response.get("reason", "").lower(), (
-            f"Expected reason to mention 'legacy', got: {response.get('reason')}"
-        )
-
-    def test_speak_accepted_when_legacy_enabled(self):
-        """When feature_flags.legacy_speak_enabled is true (default), speak routes normally."""
-        config = {"feature_flags": {"legacy_speak_enabled": True}}
-        msg = {"command": "speak", "text": "hello", "session_id": "s1"}
-        response = self._run_server_with_config(config, msg)
-
-        assert response.get("status") != "rejected", (
-            f"Expected normal routing but got rejected: {response}"
-        )
-
-    def test_speak_accepted_when_flag_absent(self):
-        """When feature_flags section is missing, speak defaults to enabled."""
-        config = {}  # no feature_flags at all
-        msg = {"command": "speak", "text": "hello", "session_id": "s1"}
-        response = self._run_server_with_config(config, msg)
-
-        assert response.get("status") != "rejected", (
-            f"Expected normal routing (flag absent = enabled), got: {response}"
-        )
+        for config in (
+            {"feature_flags": {"legacy_speak_enabled": False}},
+            {"feature_flags": {"legacy_speak_enabled": True}},
+            {},  # flag absent entirely
+        ):
+            response = self._run_server_with_config(config, msg)
+            assert response.get("status") not in ("ok", "queued", "accepted"), (
+                f"the daemon ACCEPTED a legacy `speak` command with config "
+                f"{config}: {response}. The legacy speak path was deleted in "
+                "Phase 3; accepting it means a second audio path is back."
+            )
+            assert response.get("status") == "error", (
+                f"expected the unknown-command error for `speak` with config "
+                f"{config}, got: {response}. A 'rejected' status here would "
+                "mean the flag-gated kill switch came back, which is weaker "
+                "than deletion."
+            )
 
 
 # ---------------------------------------------------------------------------

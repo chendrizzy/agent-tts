@@ -46,6 +46,10 @@ verify:
 		tests/test_llm_provider.py \
 		tests/test_tts_engines.py \
 		tests/test_platform.py \
+		tests/test_humanize_paths_pipeline.py \
+		tests/test_single_afplay_spawner.py \
+		tests/test_playback_stage_legacy_lock.py \
+		tests/test_cutover_discipline.py \
 		tests/test_paths.py \
 		tests/test_plugin_manifest.py \
 		tests/test_project_voice_parity.py \

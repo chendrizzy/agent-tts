@@ -6,6 +6,45 @@ All notable changes to claude-tts are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.12] — 2026-10-11
+
+### Fixed
+- **Filesystem paths were mangled in spoken output, and had been since
+  v0.1.0.** The text pass that prepares speech shortened verbose paths, but it
+  did so *after* the step that makes punctuation speakable — and that step
+  rewrites the punctuation inside a path (an extension's `.` becomes the spoken
+  word "dot"), after which the shortener no longer recognised a path at all.
+  Measured, with a path belonging to nobody:
+
+  | you wrote | 0.1.11 said | 0.1.12 says |
+  |---|---|---|
+  | `The file /Users/alice/dev/myapp/src/types.py is ready.` | "The file .py is ready." | "The file src/types dot py is ready." |
+  | `Config at ~/projects/web/api/server.ts is loaded.` | "Config at ~ .ts is loaded." | "Config at api/server dot ts is loaded." |
+  | `Updated /Users/alice/dev/myapp/src/content_router.py` | kept and read out the whole directory chain | "Updated src/content_router dot py just now." |
+
+  So a short filename was deleted outright and a long one came with every
+  intermediate directory read aloud — the exact readout the shortening exists
+  to prevent. Shortening now runs first, while a path still looks like one.
+  The shortener itself was always correct; only the combination was broken,
+  which is why no unit test caught it.
+
+  Known limit, written at the callsite rather than only here: shortening still
+  relies on the later pass to voice the extension dot, so its output remains
+  exposed to punctuation rules added in future. The durable fix is to render
+  each path span up front and keep it out of the prose rules entirely.
+
+### Changed
+- Four architecture-guard tests were rescued and moved **into** `make verify`.
+  All four had quietly stopped testing anything, each because the code it
+  watched moved while the guard sat outside the gate; two had been failing since
+  2026-07-04. The single-audio-player check had silently gone from reporting
+  "1 site" to "0 sites" and could no longer detect a violation in either
+  direction; it now keys on the process-spawn call itself instead of on the
+  player's name, and pins every spawning function in the daemon with a written
+  reason. Nothing about runtime behaviour changes, but a regression in any of
+  these areas now fails the gate instead of passing unnoticed.
+  Gate: 879 passed / 5 skipped (was 854).
+
 ## [0.1.11] — 2026-10-11
 
 ### Fixed

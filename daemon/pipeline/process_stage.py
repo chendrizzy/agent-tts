@@ -214,12 +214,13 @@ class ProcessStage:
         Synchronous text cleaning (runs in thread pool).
 
         Pipeline order:
-        1. Markdown -> speech: drop fenced code, KEEP inline-code contents,
+        1. Humanize filesystem paths — FIRST, while they are still in path
+           syntax. See the call site for why the order is load-bearing.
+        2. Markdown -> speech: drop fenced code, KEEP inline-code contents,
            destructure headers/emphasis/lists/tables/links/rules/box-drawing/
            diffstats/HTML-entities (the single shared, idempotent pass that
            every TTS-bound path funnels through). See text_utils.normalize_for_speech.
-        2. Remove emojis (not speakable)
-        3. Humanize filesystem paths
+        3. Remove emojis (not speakable)
         4. RESTORE contractions (contract expanded → natural)
         5. Normalize whitespace
         """
@@ -247,16 +248,32 @@ class ProcessStage:
             def speak_numeric_units(text: str) -> str:  # type: ignore
                 return text or ""
 
-        # 1. Markdown -> speech (fenced code dropped, inline code CONTENTS kept,
+        # 1. Humanize filesystem paths: "/Volumes/DISK/.../example"
+        #    → "example" so TTS doesn't spell out every "slash X slash Y".
+        #
+        #    This MUST run before normalize_for_speech. That pass rewrites the
+        #    punctuation inside a path — an extension's "." becomes the word
+        #    "dot" — after which this matcher no longer sees a path at all.
+        #    Measured when it ran second: a short stem was deleted outright
+        #    ("The file /Users/alice/dev/myapp/src/types.py is ready." spoken as
+        #    "The file .py is ready.") and a long one kept its entire directory
+        #    chain, which is the readout this call exists to prevent. Shipped
+        #    that way in v0.1.0 through v0.1.11.
+        #
+        #    shortcut: this still leans on the markdown pass below to voice the
+        #    extension dot, so its output stays exposed to every punctuation
+        #    rule added later — the same collision can return from the other
+        #    side. Upgrade to detect-and-protect spans (render each path span
+        #    up front, substitute an inert sentinel, restore after the prose
+        #    rules) when the next punctuation rule lands.
+        text = humanize_paths(text)
+
+        # 2. Markdown -> speech (fenced code dropped, inline code CONTENTS kept,
         #    all structural markup destructured). Idempotent.
         text = normalize_for_speech(text)
 
-        # 2. Remove emojis
+        # 3. Remove emojis
         text = self._EMOJI_PATTERN.sub('', text)
-
-        # 3. Humanize filesystem paths: "/Volumes/DISK/.../example"
-        # → "example" so TTS doesn't spell out every "slash X slash Y".
-        text = humanize_paths(text)
 
         # 4. RESTORE contractions (CONTRACT expanded forms for natural speech)
         # CRITICAL: "I am" → "I'm", NOT "I'm" → "I am"!
