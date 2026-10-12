@@ -1,5 +1,5 @@
 {
-  "name": "claude-tts",
+  "name": "agent-tts",
   "description": "Speak Claude Code progress aloud — local TTS daemon with smart content routing, hooks, and graceful degradation.",
   "version": "0.1.12",
   "author": { "name": "chendrizzy", "url": "https://github.com/chendrizzy" },

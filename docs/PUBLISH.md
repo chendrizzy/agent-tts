@@ -7,7 +7,7 @@
 ## One-time: create the remote
 
 ```bash
-gh repo create chendrizzy/claude-tts --public --source=. --remote=origin --push
+gh repo create chendrizzy/agent-tts --public --source=. --remote=origin --push
 ```
 
 (or create the repo in the GitHub UI and `git remote add origin …` + `git push -u origin main`).
@@ -28,7 +28,7 @@ with a source tarball.
 
 `.claude-plugin/marketplace.json` declares the plugin. To make it installable via
 the Claude Code marketplace, add this repo as a marketplace source in Claude Code
-(`/plugin marketplace add chendrizzy/claude-tts`) or submit it per the current
+(`/plugin marketplace add chendrizzy/agent-tts`) or submit it per the current
 marketplace process. The plugin installs from `source: "./"` at the tagged commit.
 
 ## What is intentionally NOT automated

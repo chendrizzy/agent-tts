@@ -50,6 +50,7 @@ verify:
 		tests/test_single_afplay_spawner.py \
 		tests/test_playback_stage_legacy_lock.py \
 		tests/test_cutover_discipline.py \
+		tests/test_suite_is_collectable.py \
 		tests/test_paths.py \
 		tests/test_plugin_manifest.py \
 		tests/test_project_voice_parity.py \

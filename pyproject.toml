@@ -1,5 +1,5 @@
 [project]
-name = "claude-tts"
+name = "agent-tts"
 version = "0.1.12"
 description = "A filtered, spoken stream of a Claude Code agent's output — judge + summarize via a local LLM, synthesize via a TTS engine, driven by Claude Code hooks."
 readme = "README.md"
@@ -34,8 +34,8 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 # project's interpreter. See README "Engines".
 
 [project.urls]
-Homepage = "https://github.com/chendrizzy/claude-tts"
-Repository = "https://github.com/chendrizzy/claude-tts"
+Homepage = "https://github.com/chendrizzy/agent-tts"
+Repository = "https://github.com/chendrizzy/agent-tts"
 
 [tool.uv]
 # This is an application (a daemon run by Claude Code hooks), not a distributable

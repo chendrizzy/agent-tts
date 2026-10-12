@@ -19,7 +19,7 @@ MARKETPLACE_JSON = ROOT / ".claude-plugin" / "marketplace.json"
 def test_plugin_json_is_valid():
     assert PLUGIN_JSON.is_file(), f"missing {PLUGIN_JSON}"
     data = json.loads(PLUGIN_JSON.read_text(encoding="utf-8"))
-    assert data["name"] == "claude-tts"
+    assert data["name"] == "agent-tts"
     assert isinstance(data.get("version"), str) and data["version"]
     assert isinstance(data.get("description"), str) and data["description"]
     assert data["license"] == "MIT"
@@ -32,8 +32,8 @@ def test_marketplace_json_is_valid_and_consistent():
     plugins = market["plugins"]
     assert isinstance(plugins, list) and len(plugins) >= 1
     first = plugins[0]
-    # INVARIANT: marketplace plugin name === plugin.json name === "claude-tts"
-    assert first["name"] == plugin["name"] == "claude-tts"
+    # INVARIANT: marketplace plugin name === plugin.json name === "agent-tts"
+    assert first["name"] == plugin["name"] == "agent-tts"
     # INVARIANT: single self-marketplace points at repo root
     assert first["source"] == "./"
     assert isinstance(market["metadata"]["version"], str) and market["metadata"]["version"]

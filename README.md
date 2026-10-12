@@ -1,6 +1,6 @@
-# claude-tts
+# agent-tts
 
-[![tests](https://github.com/chendrizzy/claude-tts/actions/workflows/test.yml/badge.svg)](https://github.com/chendrizzy/claude-tts/actions/workflows/test.yml)
+[![tests](https://github.com/chendrizzy/agent-tts/actions/workflows/test.yml/badge.svg)](https://github.com/chendrizzy/agent-tts/actions/workflows/test.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![python: 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 [![local-first](https://img.shields.io/badge/local--first-token--free-success.svg)](#no-llm-fallback)
@@ -12,12 +12,12 @@
 > printed `timeout: command not found`, nothing reached the daemon, and it then
 > logged `dispatched` and exited 0. It only worked on machines with Homebrew
 > coreutils. Measured: with `PATH=/usr/bin:/bin` the daemon received 0 of 1
-> messages. [v0.1.11](https://github.com/chendrizzy/claude-tts/releases/tag/v0.1.11)
+> messages. [v0.1.11](https://github.com/chendrizzy/agent-tts/releases/tag/v0.1.11)
 > moves the ceiling inside the Python child and adds a CI test that runs the
 > real hooks on a stock `PATH`, asserting what the daemon *received* rather than
 > the hook's exit code — which was 0 throughout.
 
-**Hear your coding agent.** claude-tts speaks a *curated, filtered* stream of a
+**Hear your coding agent.** agent-tts speaks a *curated, filtered* stream of a
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agent's work — the
 status pivots, the errors, the final answers — and stays quiet through the noise.
 A local LLM judges what's worth saying and summarizes the long bits; a TTS engine
@@ -25,7 +25,7 @@ synthesizes it; Claude Code hooks drive the whole thing. Local-first and
 token-free by default.
 
 <p align="center">
-  <img src="docs/media/demo.gif" alt="claude-tts deciding, in real time, what to speak from a Claude Code session: Read/Edit stay quiet; test results, an error, and the final answer are spoken aloud." width="100%">
+  <img src="docs/media/demo.gif" alt="agent-tts deciding, in real time, what to speak from a Claude Code session: Read/Edit stay quiet; test results, an error, and the final answer are spoken aloud." width="100%">
 </p>
 
 > ▶ **[Watch the ~14s clip with sound](docs/media/demo.mp4)** · **[audio only](docs/media/sample.mp3)** — the exact lines marked SPEAK above, voiced by the default `edge-tts` engine.
@@ -101,10 +101,11 @@ dependency.
 
 ## Install
 
-claude-tts is a Claude Code plugin. Once it's added as a marketplace source:
+agent-tts installs as a Claude Code plugin (and speaks for Cursor too --
+see below). Once it's added as a marketplace source:
 
 ```
-/plugin marketplace add chendrizzy/claude-tts
+/plugin marketplace add chendrizzy/agent-tts
 /tts:setup
 ```
 
@@ -118,8 +119,8 @@ idempotent; `/tts:doctor` re-checks health anytime.
 <summary><b>Manual setup</b> (development, or running without the plugin)</summary>
 
 ```bash
-git clone https://github.com/chendrizzy/claude-tts
-cd claude-tts
+git clone https://github.com/chendrizzy/agent-tts
+cd agent-tts
 uv sync --extra edge          # base deps + the edge-tts engine
 cp config.example.json ~/.config/claude-tts/config.json   # edit to taste
 ```
@@ -225,7 +226,7 @@ the write quietly.
 
 ## Cursor (editor) support
 
-claude-tts can also speak for [Cursor](https://cursor.com)'s agent. The repo
+agent-tts can also speak for [Cursor](https://cursor.com)'s agent. The repo
 ships wrapper hooks that translate Cursor's agent-hook events into the same
 daemon the Claude Code hooks drive:
 
@@ -251,9 +252,9 @@ projects):
 {
   "version": 1,
   "hooks": {
-    "preToolUse": [{ "command": "/abs/path/to/claude-tts/hooks/cursor-pre-tool-use.sh" }],
-    "postToolUse": [{ "command": "/abs/path/to/claude-tts/hooks/cursor-post-tool-use.sh" }],
-    "afterAgentResponse": [{ "command": "/abs/path/to/claude-tts/hooks/cursor-after-agent-response.sh" }]
+    "preToolUse": [{ "command": "/abs/path/to/agent-tts/hooks/cursor-pre-tool-use.sh" }],
+    "postToolUse": [{ "command": "/abs/path/to/agent-tts/hooks/cursor-post-tool-use.sh" }],
+    "afterAgentResponse": [{ "command": "/abs/path/to/agent-tts/hooks/cursor-after-agent-response.sh" }]
   }
 }
 ```

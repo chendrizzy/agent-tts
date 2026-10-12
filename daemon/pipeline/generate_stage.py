@@ -276,17 +276,17 @@ class GenerateStage:
             return
         self._last_disk_warn = now
         mb = max(0, free_bytes // (1024 * 1024))
-        msg = f"claude-tts muted: only {mb} MB free — free disk space to restore speech"
+        msg = f"agent-tts muted: only {mb} MB free — free disk space to restore speech"
         try:
             import sys
             import subprocess
             if sys.platform == "darwin":
                 subprocess.Popen(
                     ["osascript", "-e",
-                     f'display notification "{msg}" with title "claude-tts"'],
+                     f'display notification "{msg}" with title "agent-tts"'],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             elif shutil.which("notify-send"):
-                subprocess.Popen(["notify-send", "claude-tts", msg],
+                subprocess.Popen(["notify-send", "agent-tts", msg],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
