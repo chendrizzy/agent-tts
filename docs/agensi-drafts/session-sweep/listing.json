@@ -1,0 +1,31 @@
+{
+  "name": "session-sweep",
+  "summary": "Detect a Claude Code update and safely cycle stale cmux-hosted sessions (idle now; busy via interrupt-or-wait).",
+  "description": "Companion to self-cycle. Runs sweep.sh interactively, classifies cmux Claude Code sessions, cycles idle stale panes in place, and prompts for busy ones. Self-refresh the driver last via self-cycle. Requires cmux. Canonical repo: https://github.com/chendrizzy/session-sweep",
+  "pricing_type": "paid",
+  "price": 5,
+  "tags": ["agents-orchestration", "workflow-automation"],
+  "keywords": ["session-sweep", "cmux", "claude-update", "cycle", "stale-session", "self-refresh", "macos", "fleet"],
+  "use_cases": [
+    "After a Claude Code update, refresh every open cmux session still on the old build",
+    "Preview with --dry-run which panes would cycle",
+    "Interrupt-or-wait for busy stale sessions without losing tracked resume state"
+  ],
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "(load from docs/agensi-drafts/session-sweep/SKILL.md at submit time)"
+    }
+  ],
+  "_canonical_repo": "https://github.com/chendrizzy/session-sweep",
+  "_canonical_path": "/Volumes/CHENDRIX/GITHUB/agent-skills/claude/session-sweep",
+  "_git_remote": "origin https://github.com/chendrizzy/session-sweep.git",
+  "_quality_bar_source": "Agensi Creator Studio category list (agents-orchestration, workflow-automation)",
+  "_gaps": [
+    "Draft SKILL.md is the Agensi procedure; sweep.sh, sweep.bats, and tests live in the GitHub package",
+    "Machine-specific LaunchAgent notes stay in the repo skill as operator history, not in this listing",
+    "Paid $5 one-time, creator net $3.50 before refunds",
+    "Creator Studio: pending review; slug session-sweep; paid $5 one-time. Category picker also stored aliases ai-agents and automation next to agents-orchestration and workflow-automation. Public /skills/session-sweep stays 404 until approval."
+  ],
+  "_status": "in_review"
+}
