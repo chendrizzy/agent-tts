@@ -306,7 +306,11 @@ def _identify_uncached(cwd: str) -> dict:
         top, common, branch = out[0], out[1], out[2]
     except (OSError, subprocess.SubprocessError, IndexError):
         return ident
-    project = _true_case(os.path.realpath(os.path.dirname(os.path.abspath(os.path.join(cwd, common)))))
+    common = os.path.abspath(os.path.join(cwd, common))
+    # only a plain repo's common dir is <project>/.git; submodule/bare common dirs are not under a project folder
+    project = os.path.dirname(common) if os.path.basename(common) == ".git" else (
+        top if "/.git/modules/" in common.replace(os.sep, "/") else common)
+    project = _true_case(os.path.realpath(project))
     ident.update(worktree=_true_case(os.path.realpath(top)), project=project,
                  project_name=os.path.basename(project),
                  workspace=os.path.dirname(project),
@@ -389,13 +393,14 @@ def load_config() -> dict:
     for p in (paths.config_path(),
               Path(__file__).resolve().parent.parent / "config" / "tts_user_config.json",
               Path.home() / ".claude" / "tts" / "config" / "tts_user_config.json"):
-        try:
-            if p.exists():
+        if p.exists():  # first existing file wins: falling through would show a stale config as live
+            try:
                 cfg = json.loads(p.read_text(encoding="utf-8"))
                 if isinstance(cfg, dict):
                     return cfg
-        except (OSError, ValueError):
-            continue
+                return {"config_error": f"{p}: not a JSON object"}
+            except (OSError, ValueError) as e:
+                return {"config_error": f"{p}: {e}"}
     return {}
 
 
@@ -410,7 +415,7 @@ def voices_info(cfg: Optional[dict] = None) -> dict:
     catalog = list(dict.fromkeys(names + pool + ([default] if default else [])))
     return {"engine": engine, "default_voice": default, "rate": voice.get("rate"),
             "volume": voice.get("volume"), "pool": pool, "pool_enabled": enabled,
-            "catalog": catalog}
+            "catalog": catalog, **({"config_error": cfg["config_error"]} if "config_error" in cfg else {})}
 
 
 def _project_label(cwd: str) -> str:

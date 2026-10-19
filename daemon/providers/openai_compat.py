@@ -11,6 +11,7 @@ import logging
 import urllib.request
 from typing import Optional
 
+from daemon.ollama_summarizer import _MAX_CONTENT_CHARS, cap_head_tail, rule_based_summary
 from daemon.providers.base import LLMProvider
 from daemon.providers.prompts import build_judge_hint
 from daemon.tts_types import Category
@@ -82,9 +83,10 @@ class OpenAICompatProvider(LLMProvider):
         prompt = (
             f"Summarize the following {category.value} output for a brief spoken "
             f"text-to-speech readout. One or two plain sentences, no markup. "
-            f"{context_hint}\n\nCONTENT:\n{content}"
+            f"{context_hint}\n\nCONTENT:\n{cap_head_tail(content, _MAX_CONTENT_CHARS)}"
         )
         out = await self._chat(prompt)
-        if out is None and not allow_fallback:
-            return None
+        out = (out or "").strip()  # HTTP 200 with empty content must not go silent
+        if not out:
+            return rule_based_summary(content) if allow_fallback else None
         return out

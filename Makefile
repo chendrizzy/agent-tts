@@ -3,7 +3,7 @@
 # `make verify` is the BINDING QUALITY GATE (DIAGNOSIS H0): the machine-checkable
 # definition of "done" that the project previously lacked (the listen-test gate
 # kept getting skipped, so regressions shipped). It is deterministic, needs no
-# live daemon / Ollama / pytest-asyncio, and FAILS on:
+# live daemon / Ollama (live_model tests are deselected), and FAILS on:
 #   - markdown leaking to the voice (R1)            tests/test_spoken_render.py
 #   - the inline-code deletion bug / non-idempotence (R1)
 #   - markup in the real shadow.log corpus (R1)     tests/test_shadow_replay.py
@@ -18,7 +18,7 @@ PYTHON ?= python3
 
 help:
 	@echo "make verify      - binding quality gate (deterministic, no live deps)"
-	@echo "make verify-all  - full test suite (async tests need: pip install pytest-asyncio)"
+	@echo "make verify-all  - everything, including live_model tests (needs Ollama)"
 	@echo "make verify-install - install-readiness dry-run (layout, perms, setup modules)"
 	@echo "make sweep-logs  - idempotent TTS log retention sweep (R3 hygiene)"
 	@echo "make restart     - safe daemon restart (picks up on-disk code; resets health uptime)"
@@ -26,53 +26,10 @@ help:
 
 verify:
 	$(PYTHON) tests/fixtures/spoken_corpus/_generate.py
-	$(PYTHON) -m pytest -q \
-		tests/test_spoken_render.py \
-		tests/test_shadow_replay.py \
-		tests/test_text_utils.py \
-		tests/test_router_corpus.py \
-		tests/test_prose_drop.py \
-		tests/test_queue_manager.py \
-		tests/test_playback_cutoff.py \
-		tests/test_spoken_log.py \
-		tests/test_content_router.py \
-		tests/test_subagent_speech_gate.py \
-		tests/test_hook_portability.py \
-		tests/test_hook_config.py \
-		tests/test_voicebox_client.py \
-		tests/test_cache_cleanup.py \
-		tests/test_disk_guard.py \
-		tests/test_generate_ordering.py \
-		tests/test_summarizer_echo.py \
-		tests/test_llm_provider.py \
-		tests/test_tts_engines.py \
-		tests/test_platform.py \
-		tests/test_humanize_paths_pipeline.py \
-		tests/test_single_afplay_spawner.py \
-		tests/test_pre_tool_use_parser.py \
-		tests/test_playback_stage_legacy_lock.py \
-		tests/test_cutover_discipline.py \
-		tests/test_suite_is_collectable.py \
-		tests/test_paths.py \
-		tests/test_plugin_manifest.py \
-		tests/test_project_voice_parity.py \
-		tests/test_release_notes.py \
-		tests/test_calibration.py \
-		tests/test_service_render.py \
-		tests/test_service_ctl.py \
-		tests/test_pause_volume.py \
-		tests/test_systemd_render.py \
-		tests/test_config_render.py \
-		tests/test_output_context.py \
-		tests/test_speech_selection.py \
-		tests/test_session_control.py \
-		tests/test_dictation_hold.py \
-		tests/test_stop_event_cwd.py \
-		tests/test_feedback.py \
-		tests/test_notifications.py
+	$(PYTHON) -m pytest -q tests -o asyncio_mode=auto -m 'not live_model'
 
 verify-all:
-	$(PYTHON) -m pytest -q tests
+	$(PYTHON) -m pytest -q tests -o asyncio_mode=auto
 
 verify-install:
 	bash tests/test-install-dry-run.sh

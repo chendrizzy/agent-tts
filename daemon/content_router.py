@@ -29,6 +29,7 @@ Invariants:
 """
 from __future__ import annotations
 
+import contextvars
 import asyncio
 import hashlib
 import logging
@@ -281,7 +282,7 @@ WARNING_PREFIX_RE = re.compile(
 # output. Never useful to speak; often hits ERROR_KEYWORDS_RE on identifiers
 # like "ErrorCategory". Must be checked on RAW stdout before shape mutation.
 GREP_LINE_RE = re.compile(
-    r"^\s*\d+:\S",  # integer + colon + non-whitespace at line start
+    r"^\s*\d+:(?!\d)\S",  # integer + colon + non-digit non-space; (?!\d) spares clock times
     re.MULTILINE,
 )
 
@@ -462,6 +463,10 @@ def _truncate(text: str, max_chars: int = 80) -> str:
 # ContentRouter
 # ============================================================================
 
+# Hashes noted by the route() in this task, so it can release them (see route).
+_NOTED: contextvars.ContextVar = contextvars.ContextVar("router_noted", default=None)
+
+
 class ContentRouter:
     """Single classifier replacing the legacy 3-classifier stack.
 
@@ -506,7 +511,8 @@ class ContentRouter:
         )
 
         # Recent-hash dedupe — bounded deque, accepts benign concurrency races.
-        self._recent_hashes: deque[str] = deque(maxlen=RECENT_HASH_LIMIT)
+        # (session_id, content_hash) -> monotonic stamp, same window as errors.
+        self._recent_hashes: dict[tuple[str, str], float] = {}
         # (session_id, content_hash) -> monotonic stamp; see ERROR_DEDUPE_WINDOW_S.
         self._recent_errors: dict[tuple[str, str], float] = {}
 
@@ -516,8 +522,8 @@ class ContentRouter:
         # slips through; this catches that class without blocking a line that
         # legitimately recurs later (a different line in between resets it).
         # Read in _drop_check; advanced only on the speak path in _note_hash.
-        self._last_tail_hash: str = ""
-        self._consecutive_tail_count: int = 0
+        # session_id -> (tail_hash, consecutive_count, last monotonic stamp)
+        self._tail_runs: dict[str, tuple[str, int, float]] = {}
 
         # Per-session recently-spoken window (R-context): a small bounded deque
         # per session, mirroring _recent_hashes but scoped so the LLM judge can
@@ -677,6 +683,37 @@ class ContentRouter:
             )
 
     async def route(self, event: dict) -> Optional[RoutedItem]:
+        # Hashes are reserved at classify time (concurrent duplicates must lose);
+        # release them if this route dies before the item is returned, so a
+        # cancelled route cannot poison its own retry.
+        noted: list = []
+        token = _NOTED.set(noted)
+        try:
+            return await self._route(event, noted)
+        except BaseException:
+            self._release_notes(noted)
+            raise
+        finally:
+            _NOTED.reset(token)
+
+    def _release_notes(self, noted: list) -> None:
+        for key, stamp, prev_run, run, window_hash in reversed(noted):
+            if self._recent_hashes.get(key) == stamp:
+                del self._recent_hashes[key]
+            sid = key[0]
+            if self._tail_runs.get(sid) is run:  # nobody advanced it since: undo ours
+                if prev_run is None:
+                    self._tail_runs.pop(sid, None)
+                else:
+                    self._tail_runs[sid] = prev_run
+            window = self._recent_spoken_by_session.get(sid)
+            if window_hash is not None and window:
+                for i in range(len(window) - 1, -1, -1):  # our entry is the newest copy
+                    if window[i] == window_hash:
+                        del window[i]
+                        break
+
+    async def _route(self, event: dict, noted: list) -> Optional[RoutedItem]:
         """End-to-end: classify → (maybe) summarize → wrap in RoutedItem.
 
         Returns None if classify_event returns should_speak=False.
@@ -726,6 +763,7 @@ class ContentRouter:
                 f"backpressure: {decision.category.value} priority "
                 f"{decision.priority} < cutoff {pressure * 2:.0f} (pressure {pressure:.1f})"
             )
+            self._release_notes(noted)  # never spoken: a later identical item may speak
             return None
 
         # 2. Summarization push — longer messages get pushed harder toward
@@ -738,7 +776,7 @@ class ContentRouter:
         ):
             decision = replace(decision, needs_summarization=True)
 
-        decision = self._apply_project_voice(decision, event)
+        decision = await self._apply_project_voice(decision, event)
 
         # Weave project/artifact/intent context (gated; OFF => no-op, unchanged).
         # Must run BEFORE _maybe_summarize so context_hint enrichment reaches the
@@ -802,7 +840,7 @@ class ContentRouter:
             return self._silence(event, reason="stop_event with empty content")
 
         # Drop filter on the assistant text itself
-        dropped = self._drop_check(content_raw, prose=True)  # turn summary: skip stdout-shape vetoes
+        dropped = self._drop_check(content_raw, prose=True, session_id=event.get("session_id") or "default")  # turn summary: skip stdout-shape vetoes
         if dropped is not None:
             return self._silence(event, reason=dropped)
 
@@ -942,12 +980,7 @@ class ContentRouter:
                     event, reason=f"duplicate error within {ERROR_DEDUPE_WINDOW_S:.0f}s"
                 )
             self._recent_errors[key] = now
-            if len(self._recent_errors) > 256:
-                cutoff = now - ERROR_DEDUPE_WINDOW_S
-                for k in [k for k, t in self._recent_errors.items() if t < cutoff]:
-                    del self._recent_errors[k]
-                while len(self._recent_errors) > 256:
-                    del self._recent_errors[next(iter(self._recent_errors))]
+            self._prune_stamps(self._recent_errors, now)
             # ERRORs aren't aggressively summarized; only summarize if very long.
             needs_sum = len(content) >= self.summarize_threshold * 3
             return self._make_decision(
@@ -974,7 +1007,9 @@ class ContentRouter:
         # last 3 lines. This is the F3/ROUTER-04 fix: previously the drop
         # check only saw the extracted tail, which stripped the very lines
         # that the pattern matchers relied on.
-        if stdout:
+        # Test results are exempt: their surrounding lines (timestamps, "modified:")
+        # look like grep/git noise but the pass/fail line is the point.
+        if stdout and not stdout_looks_like_tests:
             raw_drop = _drop_check_raw(stdout)
             if raw_drop is not None:
                 return self._silence(event, reason=f"raw-stdout: {raw_drop}")
@@ -985,7 +1020,7 @@ class ContentRouter:
         # If extractor found a signal, classify as STATUS straightaway.
         if extracted:
             # Drop filter (e.g., dup with an earlier identical extraction).
-            dropped = self._drop_check(extracted)
+            dropped = self._drop_check(extracted, session_id=event.get("session_id") or "default")
             if dropped is not None:
                 return self._silence(event, reason=dropped)
             self._note_hash(extracted, event.get("session_id") or "default")
@@ -1026,7 +1061,7 @@ class ContentRouter:
             if verdict:
                 # Use the last few lines as the content payload.
                 content = _last_n_lines(stdout, 3) or stdout[:240]
-                dropped = self._drop_check(content)
+                dropped = self._drop_check(content, session_id=session_id)
                 if dropped is not None:
                     return self._silence(event, reason=dropped)
                 # recency_key=stdout so the per-session recency check (which
@@ -1517,7 +1552,17 @@ class ContentRouter:
 
     # ------- Drop filter --------------------------------------------------
 
-    def _drop_check(self, content: str, prose: bool = False) -> Optional[str]:
+    @staticmethod
+    def _prune_stamps(stamps: dict, now: float) -> None:
+        if len(stamps) > 256:
+            for k in [k for k, t in stamps.items() if now - t >= ERROR_DEDUPE_WINDOW_S]:
+                del stamps[k]
+            while len(stamps) > 256:
+                del stamps[next(iter(stamps))]
+
+    def _drop_check(
+        self, content: str, prose: bool = False, session_id: str = "default"
+    ) -> Optional[str]:
         """Run the regex drop filter. Returns drop-reason or None.
 
         ``prose=True`` (stop_event turn summaries) SKIPS the MID-CONTENT patterns
@@ -1564,13 +1609,22 @@ class ContentRouter:
             if SYMBOL_RUN_RE.search(content):
                 return "symbol-run content (likely diff/banner)"
         # Dedupe on normalized hash — ALWAYS (Stop hook re-sends identical text).
+        sid = session_id or "default"
+        now = time.monotonic()
         h = _hash_content(content)
-        if h in self._recent_hashes:
+        last = self._recent_hashes.get((sid, h))
+        if last is not None and now - last < ERROR_DEDUPE_WINDOW_S:
             return "duplicate of recent content"
         # Consecutive-tail guard: drop the 3rd+ utterance in a row that shares an
         # identical last line (the whole-content hash above misses these when the
         # preamble varies). Read-only; the count advances in _note_hash.
-        if self._consecutive_tail_count >= 2 and _tail_hash(content) == self._last_tail_hash:
+        run = self._tail_runs.get(sid)
+        if (
+            run
+            and run[1] >= 2
+            and now - run[2] < ERROR_DEDUPE_WINDOW_S
+            and _tail_hash(content) == run[0]
+        ):
             return "repeated trailing line >2x consecutively"
         return None
 
@@ -1579,29 +1633,34 @@ class ContentRouter:
     ) -> None:
         if not content:
             return
-        self._recent_hashes.append(_hash_content(content))
+        sid = session_id or "default"
+        now = time.monotonic()
+        self._recent_hashes[(sid, _hash_content(content))] = now
+        self._prune_stamps(self._recent_hashes, now)
         # Advance the consecutive-tail counter (read in _drop_check). Same last
-        # line as the previous spoken item → increment; a different one resets.
+        # line as the previous spoken item in this session → increment; else reset.
         th = _tail_hash(content)
-        if th and th == self._last_tail_hash:
-            self._consecutive_tail_count += 1
-        else:
-            self._last_tail_hash = th
-            self._consecutive_tail_count = 1
+        prev_run = self._tail_runs.get(sid)
+        same = bool(th and prev_run and prev_run[0] == th and now - prev_run[2] < ERROR_DEDUPE_WINDOW_S)
+        run = (th, prev_run[1] + 1 if same else 1, now)
+        self._tail_runs[sid] = run
+        noted = _NOTED.get()  # this route's undo list (see route()); None outside route()
         # Per-session recently-spoken window (R-context). Keyed by recency_key
         # when provided (so the ambiguous branch can record the FULL stdout it
         # checked against), else by the spoken content itself. Lazily created so
         # we never accumulate state for sessions that never speak. session_id
         # defaults to "default" to keep legacy callers safe.
         key = recency_key or content
-        if not key:
+        window_hash = _hash_content(key) if key else None
+        if noted is not None:
+            noted.append(((sid, _hash_content(content)), now, prev_run, run, window_hash))
+        if window_hash is None:
             return
-        sid = session_id or "default"
         window = self._recent_spoken_by_session.get(sid)
         if window is None:
             window = deque(maxlen=RECENT_SPOKEN_PER_SESSION_LIMIT)
             self._recent_spoken_by_session[sid] = window
-        window.append(_hash_content(key))
+        window.append(window_hash)
 
     def _was_recently_spoken(self, content: str, session_id: str = "default") -> bool:
         """True if this content hash is in the session's recently-spoken window.
@@ -2074,12 +2133,14 @@ class ContentRouter:
             decision = replace(decision, needs_summarization=True)
         return decision
 
-    def _apply_project_voice(self, decision: RouterDecision, event: dict) -> RouterDecision:
+    async def _apply_project_voice(self, decision: RouterDecision, event: dict) -> RouterDecision:
         # Per-session control rules (panel-set) beat the hashed project pool.
         from daemon import session_control, spoken_log
         sid = event.get("session_id") or ""
-        hit = session_control.override_voice(
-            sid, event.get("cwd") or spoken_log.get_session_cwd(sid)
+        # identify() may shell out to git on a cache miss; keep it off the loop.
+        hit = await asyncio.to_thread(
+            session_control.override_voice,
+            sid, event.get("cwd") or spoken_log.get_session_cwd(sid),
         )
         if hit:
             return replace(decision, voice=hit[0])

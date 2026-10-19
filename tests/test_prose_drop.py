@@ -52,7 +52,7 @@ def test_prose_still_drops_empty_systemreminder_and_dupes():
     assert r._drop_check("<system-reminder>hi</system-reminder>", prose=True) is not None
     # dedup MUST stay on for prose — Stop hook re-sends identical final text.
     r._note_hash("a one-off summary sentence", "s1")
-    assert r._drop_check("a one-off summary sentence", prose=True) == "duplicate of recent content"
+    assert r._drop_check("a one-off summary sentence", prose=True, session_id="s1") == "duplicate of recent content"
 
 
 def test_tool_path_unchanged_with_default_prose_false():

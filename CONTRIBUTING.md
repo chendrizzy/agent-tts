@@ -57,9 +57,9 @@ dependencies lazy-imported so a missing engine never breaks daemon startup.
 
 The daemon is host-agnostic — anything that can shape an event into the
 Claude Code hook JSON can drive it. The Cursor wiring is the reference example
-and a contributable surface: `hooks/cursor-pre-tool-use.sh`,
-`cursor-post-tool-use.sh`, and `cursor-after-agent-response.sh` normalize
-Cursor's `preToolUse` / `postToolUse` / `afterAgentResponse` events via
+and a contributable surface: `hooks/cursor-post-tool-use.sh` and
+`cursor-after-agent-response.sh` normalize
+Cursor's `postToolUse` / `afterAgentResponse` events via
 `hooks/cursor_normalize.py`, then delegate to the Claude Code hooks with
 `CLAUDE_TTS_PASSTHROUGH=false` (keeps the host's stdout clean). These wrappers
 are **not** registered in `hooks/hooks.json` — editor wiring is manual. A new

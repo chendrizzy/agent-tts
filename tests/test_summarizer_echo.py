@@ -66,7 +66,7 @@ class _FakeClient:
         self.calls = []
 
     def generate_response(self, prompt, model=None, max_tokens=120,
-                          temperature=0.3, keep_alive=None):
+                          temperature=0.3, keep_alive=None, timeout=None):
         self.calls.append({"max_tokens": max_tokens})
         return self._text
 

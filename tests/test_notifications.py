@@ -171,7 +171,7 @@ def test_hook_passes_enabled_kind_and_forwards_kind(tmp_path, ctl):
     sc.set_notification_prefs({"speak.permission_prompt": "false"})  # other kinds stay on
     tr = tmp_path / "t.jsonl"
     tr.write_text(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Latest reply."}]}}) + "\n")
-    p, srv, _ = _run_hook(tmp_path, ctl, {"notification_type": "idle_prompt", "message": "x", "transcript_path": str(tr)})
+    p, srv, _ = _run_hook(tmp_path, ctl, {"notification_type": "idle_prompt", "message": "Claude is waiting for your input", "transcript_path": str(tr)})
     conn, _ = srv.accept()
     conn.settimeout(3)
     got = b""
@@ -185,7 +185,7 @@ def test_hook_passes_enabled_kind_and_forwards_kind(tmp_path, ctl):
     assert p.returncode == 0
     sent = json.loads(got)
     assert sent["notification_kind"] == "idle_prompt"
-    assert sent["content"] == "Latest reply."  # a JSON Notification re-speaks the transcript's latest assistant text
+    assert sent["content"] == "Claude is waiting for your input"  # not the transcript's last reply
 
 
 @pytest.mark.parametrize("fields,kind", CASES)

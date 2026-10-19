@@ -13,7 +13,7 @@ worked-example inputs from the plan. They MUST skip cleanly if Ollama is
 not running or the `model` model is not yet built (W1.A territory).
 
 Run mock-only:
-    pytest tests/test_ollama_summarizer.py -v -m "not integration"
+    pytest tests/test_ollama_summarizer.py -v -m "not live_model"
 
 Run all (requires Ollama + model):
     pytest tests/test_ollama_summarizer.py -v
@@ -74,7 +74,8 @@ class _MockOllamaClient:
         self._responder = fn
 
     def generate_response(
-        self, prompt, model=None, max_tokens=500, temperature=0.7, keep_alive=None
+        self, prompt, model=None, max_tokens=500, temperature=0.7, keep_alive=None,
+        timeout=None
     ):  # mirrors real signature (keep_alive added in R2)
         self.calls.append(
             {
@@ -137,7 +138,7 @@ class TestSummarizeBasic:
         assert len(client.calls) == 1
         assert client.calls[0]["model"] == "qwen2.5-coder:1.5b"
         assert client.calls[0]["temperature"] == 0.3  # deterministic
-        assert client.calls[0]["max_tokens"] == 250
+        assert client.calls[0]["max_tokens"] == 296  # soft 200 + slack 96
 
     @pytest.mark.asyncio
     async def test_empty_input_short_circuits(self):
@@ -504,7 +505,7 @@ class TestWarmup:
 # Integration tests — require a running Ollama with `model` model            #
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.integration
+@pytest.mark.live_model
 class TestIntegrationModel:
     """Worked-example tests against the real model model.
 

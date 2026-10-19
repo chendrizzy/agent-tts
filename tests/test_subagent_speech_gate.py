@@ -309,7 +309,7 @@ def test_stop_hook_forwards_subagent_markers(tmp_path):
         payload = {"session_id": "s1", "transcript_path": str(tr),
                    "stop_hook_active": False, **extra}
         runs.append(subprocess.run(
-            ["sh", str(hook)], input=json.dumps(payload).encode(), env=env,
+            ["bash", str(hook)], input=json.dumps(payload).encode(), env=env,
             capture_output=True, timeout=30))
     th.join(timeout=25)
     srv.close(); shutil.rmtree(sock_dir, ignore_errors=True)

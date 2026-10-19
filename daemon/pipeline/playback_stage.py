@@ -548,77 +548,6 @@ class PlaybackStage:
 
     # ===== QueueManager-facing API (Wave 1.E additions) =====
 
-    async def priority_enqueue(self, segment: AudioSegment) -> None:
-        """Insert segment at the FRONT of the per-session playback buffer.
-
-        Used by QueueManager.submit_priority for ERROR pre-emption — the next
-        segment popped from the buffer will be this one, not whatever was
-        already queued.
-
-        Implementation: asyncio.Queue lacks insert(), so we drain to a list,
-        prepend the new segment, then refill in original order. Acquires the
-        per-session lock to keep the operation atomic against the playback
-        consumer. Adds <=2ms overhead for default 3-segment buffers.
-
-        Does NOT terminate a currently-playing afplay subprocess; the caller
-        must do that separately via get_current_proc(session_id).terminate().
-        """
-        session_id = segment.session_id
-
-        # Lazily start the session so the first ERROR for a session works.
-        if session_id not in self.session_buffers:
-            await self.start_session(session_id)
-
-        buffer = self.session_buffers[session_id]
-        lock = self.session_locks[session_id]
-
-        async with lock:
-            # Drain everything currently buffered (non-blocking).
-            existing: list[AudioSegment] = []
-            while True:
-                try:
-                    existing.append(buffer.get_nowait())
-                except asyncio.QueueEmpty:
-                    break
-
-            # Prepend the priority segment, then refill in original order.
-            # put_nowait can raise QueueFull if buffer_size was tight, but the
-            # priority segment itself MUST land — so put it first, then pad
-            # the rest until we hit capacity. Anything that doesn't fit is
-            # logged and dropped (the queue is supposed to be small anyway).
-            try:
-                buffer.put_nowait(segment)
-            except asyncio.QueueFull:
-                # Buffer is at capacity even after drain (shouldn't happen
-                # since we just emptied it, but defend the contract).
-                logger.warning(
-                    f"priority_enqueue: buffer full for session {session_id}; "
-                    f"could not insert priority segment"
-                )
-                # Restore the drained items before bailing out.
-                for s in existing:
-                    try:
-                        buffer.put_nowait(s)
-                    except asyncio.QueueFull:
-                        break
-                return
-
-            for s in existing:
-                try:
-                    buffer.put_nowait(s)
-                except asyncio.QueueFull:
-                    logger.debug(
-                        f"priority_enqueue: dropping displaced segment "
-                        f"{s.chunk_index}/{s.total_chunks} for session "
-                        f"{session_id} (buffer capacity reached after refill)"
-                    )
-                    break
-
-        logger.debug(
-            f"Priority-enqueued segment for session {session_id} "
-            f"(displaced {len(existing)} pending segments)"
-        )
-
     async def flush_buffer(
         self,
         session_id: str,
@@ -709,8 +638,7 @@ class PlaybackStage:
         """Return the in-flight playback subprocess, if any.
 
         QueueManager calls .terminate() on the result for ERROR mid-segment
-        pre-emption (after also calling priority_enqueue to seed the next
-        segment).
+        pre-emption.
 
         Returns None if the session is unknown OR if no segment is actively
         playing right now.

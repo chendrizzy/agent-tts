@@ -52,11 +52,8 @@ from daemon.pipeline.queue_manager import (
 # ---------------------------------------------------------------------------
 
 class _FakePlaybackState:
-    """Stand-in for PlaybackState. W1.E will add current_segment_ends_at and
-    playback_buffer; we provide both."""
+    """Stand-in for PlaybackState."""
     def __init__(self):
-        self.current_segment_ends_at: Optional[float] = None  # ms epoch
-        self.playback_buffer: list = []
         self.current_proc = None  # set in pre-emption tests
         self.is_playing = False
 
@@ -65,7 +62,6 @@ class _FakePlaybackStage:
     def __init__(self):
         self.session_states: dict = {}
         self.session_buffers: dict = {}
-        self.priority_enqueue = AsyncMock()
         self.flush_buffer = MagicMock(return_value=0)
 
     def get_session_state(self, session_id: str):
@@ -83,7 +79,7 @@ class _FakeIngestStage:
     def get_pending_count(self, session_id: str) -> int:
         return len(self._pending.get(session_id, []))
 
-    def peek_all(self, session_id: str) -> list[IngestMessage]:
+    async def peek_all(self, session_id: str) -> list[IngestMessage]:
         return list(self._pending.get(session_id, []))
 
     def add(self, session_id: str, msg: IngestMessage):
@@ -111,6 +107,13 @@ class _FakeOllama:
         return f"OLLAMA_SUM:{content}"
 
 
+def _set_buffered(qm, session_id: str, ms: float) -> None:
+    """Replace the session's waiting audio with one segment of ``ms``."""
+    q = asyncio.Queue()
+    q.put_nowait(types.SimpleNamespace(duration_ms=float(ms)))
+    qm._playback.session_buffers[session_id] = q
+
+
 def _make_qm(
     session_id: str = "s1",
     *,
@@ -122,19 +125,18 @@ def _make_qm(
     such that predicted_lag_ms returns approximately the desired value.
 
     pending_count contributes pending * DEFAULT_AVG_CHUNK_AUDIO_MS.
-    in_flight_ms is added by setting current_segment_ends_at.
-    buffered_ms is added by inserting one fake segment with that duration.
+    in_flight_ms and buffered_ms both become one queued segment of that duration
+    (production does not track the playing segment's remaining time).
     """
     playback = _FakePlaybackStage()
     ingest = _FakeIngestStage()
     ollama = _FakeOllama()
 
     state = _FakePlaybackState()
-    if in_flight_ms > 0:
-        state.current_segment_ends_at = time.time() * 1000.0 + in_flight_ms
-    if buffered_ms > 0:
-        seg = types.SimpleNamespace(duration_ms=float(buffered_ms))
-        state.playback_buffer.append(seg)
+    if in_flight_ms + buffered_ms > 0:
+        q = asyncio.Queue()
+        q.put_nowait(types.SimpleNamespace(duration_ms=float(in_flight_ms + buffered_ms)))
+        playback.session_buffers[session_id] = q
     playback.session_states[session_id] = state
 
     for i in range(pending_count):
@@ -202,10 +204,16 @@ class TestPredictedLag(unittest.TestCase):
         # pending=1 * 3500 + buffered 2000 = 5500ms
         self.assertAlmostEqual(qm.predicted_lag_ms("s1"), 5500.0, delta=20.0)
 
-    def test_in_flight_adds_to_lag(self):
-        qm, _, _, _ = _make_qm("s1", in_flight_ms=1500.0)
-        # pending=0, buffered=0, in_flight ~= 1500
-        self.assertAlmostEqual(qm.predicted_lag_ms("s1"), 1500.0, delta=200.0)
+    def test_buffered_sums_real_segment_durations(self):
+        # Audit: buffered was count x a per-MESSAGE average, overstating multi-segment backlogs.
+        qm, _, _, _ = _make_qm("s1")
+        playback = qm._playback
+        q = asyncio.Queue()
+        for _ in range(3):
+            q.put_nowait(types.SimpleNamespace(duration_ms=1000.0))
+        playback.session_buffers["s1"] = q
+        qm.update_avg_chunk_audio(9000.0)
+        self.assertAlmostEqual(qm.predicted_lag_ms("s1"), 3000.0, delta=1.0)
 
 
 class TestTierTransitions(unittest.TestCase):
@@ -253,9 +261,7 @@ class TestHysteresis(unittest.TestCase):
 
         # Now reduce lag to ~2500ms (in-flight only, no pending)
         qm._ingest._pending["s1"] = []
-        qm._playback.session_states["s1"].current_segment_ends_at = (
-            time.time() * 1000.0 + 2500.0
-        )
+        _set_buffered(qm, "s1", 2500.0)
         msg2 = _make_msg(request_id="m2")
         _aiorun(qm.intercept(msg2, "s1"))
         # 2500ms is between hysteresis bound (2000ms) and green upper (3000ms)
@@ -270,9 +276,7 @@ class TestHysteresis(unittest.TestCase):
 
         # Now reduce to 1500ms (well below hysteresis)
         qm._ingest._pending["s1"] = []
-        qm._playback.session_states["s1"].current_segment_ends_at = (
-            time.time() * 1000.0 + 1500.0
-        )
+        _set_buffered(qm, "s1", 1500.0)
         msg2 = _make_msg(request_id="m2")
         _aiorun(qm.intercept(msg2, "s1"))
         self.assertEqual(qm.get_tier("s1"), Tier.GREEN)
@@ -287,9 +291,7 @@ class TestHysteresis(unittest.TestCase):
             self.assertEqual(qm.get_tier("s1"), Tier.YELLOW)
             # Now jiggle: drop pending, set in_flight to 2500ms
             qm._ingest._pending["s1"] = []
-            qm._playback.session_states["s1"].current_segment_ends_at = (
-                time.time() * 1000.0 + 2500.0
-            )
+            _set_buffered(qm, "s1", 2500.0)
             _aiorun(qm.intercept(_make_msg(request_id=f"j-{_}"), "s1"))
             self.assertEqual(qm.get_tier("s1"), Tier.YELLOW)  # held by hysteresis
             # Re-add pending to push back into YELLOW
@@ -343,69 +345,6 @@ class TestErrorPreemption(unittest.TestCase):
         item = RoutedItem(decision=decision, session_id="s1")
         # Should not raise even though there's no current_proc.
         self.assertTrue(_aiorun(qm.submit_priority(item)))
-
-    def _err_item(self, eid):
-        return RoutedItem(
-            decision=RouterDecision(
-                should_speak=True, category=Category.ERROR, content="bad",
-                priority=PRIORITY_ERROR, source_event_id=eid, classified_at=time.time(),
-            ),
-            session_id="s1",
-        )
-
-    def test_cascade_caps_at_yellow(self):
-        """R3/S4: an ERROR cascade COALESCES (caps at YELLOW); it must never
-        blindly escalate to BLACK, where the buffer-flush silences pending
-        STATUS/INSIGHT wholesale."""
-        qm, _, playback, _ = _make_qm("s1")
-        _aiorun(qm.submit_priority(self._err_item("e3")))   # GREEN -> YELLOW
-        self.assertEqual(qm.get_tier("s1"), Tier.YELLOW)
-        _aiorun(qm.submit_priority(self._err_item("e4")))   # 2nd ERROR -> still YELLOW
-        self.assertEqual(qm.get_tier("s1"), Tier.YELLOW)
-
-    def test_cascade_does_not_demote_escalated_session(self):
-        """Lag-driven escalation is independent; an ERROR cascade must never
-        DEMOTE a genuinely RED/BLACK session."""
-        qm, _, playback, _ = _make_qm("s1")
-        qm._sessions["s1"].current_tier = Tier.RED
-        _aiorun(qm.submit_priority(self._err_item("e5")))
-        self.assertEqual(qm.get_tier("s1"), Tier.RED)
-
-
-class TestYellowCondensation(unittest.TestCase):
-    def test_yellow_with_peer_condenses(self):
-        qm, ingest, _, ollama = _make_qm("s1", pending_count=1)
-        # The pending item is request_id="pending-0" — give it a category.
-        qm._sessions["s1"].item_categories["pending-0"] = Category.STATUS
-        qm._sessions["s1"].item_categories["m1"] = Category.STATUS
-
-        msg = _make_msg(content="result A", request_id="m1")
-        # Make sure pending has matching category.
-        result = _aiorun(qm.intercept(msg, "s1"))
-
-        # Should produce a condensed message.
-        self.assertIsNotNone(result)
-        self.assertEqual(len(result), 1)
-        self.assertTrue(
-            result[0].content.startswith("OLLAMA_CONDENSED:")
-            or result[0].content.startswith("Multiple updates:")
-        )
-        ollama.condense_batch.assert_called()
-        # condensations counter incremented
-        self.assertEqual(qm.get_metrics("s1")["condensations_total"], 1)
-
-    def test_yellow_no_peer_passes_through(self):
-        qm, _, _, ollama = _make_qm("s1", pending_count=1)
-        # Pending item has different category from the new message
-        qm._sessions["s1"].item_categories["pending-0"] = Category.INSIGHT
-        qm._sessions["s1"].item_categories["m1"] = Category.STATUS
-
-        msg = _make_msg(content="orphan", request_id="m1")
-        result = _aiorun(qm.intercept(msg, "s1"))
-        self.assertIsNotNone(result)
-        self.assertEqual(result[0].content, "orphan")
-        ollama.condense_batch.assert_not_called()
-
 
 class TestRedHandling(unittest.TestCase):
     def test_red_drops_low_pri_status(self):
@@ -502,7 +441,7 @@ class TestBackpressure(unittest.TestCase):
 
 class TestOllamaTimeoutFallback(unittest.TestCase):
     def test_timeout_uses_rule_based_merger(self):
-        qm, _, _, ollama = _make_qm("s1", pending_count=1)
+        qm, _, _, ollama = _make_qm("s1", pending_count=3)  # RED
         # Drive the timeout-fallback path deterministically: raise TimeoutError
         # directly (the condense wrapper is now clamped to >=4s, so a real sleep
         # would make this test slow and brittle to the clamp value).
@@ -510,24 +449,18 @@ class TestOllamaTimeoutFallback(unittest.TestCase):
             raise asyncio.TimeoutError()
         ollama.condense_batch.side_effect = _slow
 
-        # Set up YELLOW with a peer.
-        qm._sessions["s1"].item_categories["pending-0"] = Category.STATUS
-        qm._sessions["s1"].item_categories["m1"] = Category.STATUS
-
-        msg = _make_msg(content="A", request_id="m1")
+        msg = _make_msg(content="A", request_id="m1", priority=PRIORITY_HIGH)
         result = _aiorun(qm.intercept(msg, "s1"))
         self.assertIsNotNone(result)
-        # Rule-based merger output begins with "Multiple updates: " for >1 item
-        self.assertTrue(result[0].content.startswith("Multiple updates: "))
+        ollama.condense_batch.assert_called()
+        self.assertEqual(result[0].content, "A")  # rule-based merge, not OLLAMA_CONDENSED
 
     def test_disabled_ollama_skips_call(self):
-        qm, _, _, ollama = _make_qm("s1", pending_count=1)
+        qm, _, _, ollama = _make_qm("s1", pending_count=3)  # RED
         # Force disabled.
         qm._ollama_disabled_until = time.time() + 60.0
-        qm._sessions["s1"].item_categories["pending-0"] = Category.STATUS
-        qm._sessions["s1"].item_categories["m1"] = Category.STATUS
 
-        msg = _make_msg(content="A", request_id="m1")
+        msg = _make_msg(content="A", request_id="m1", priority=PRIORITY_HIGH)
         _aiorun(qm.intercept(msg, "s1"))
         # condense_batch should NOT be called when disabled.
         ollama.condense_batch.assert_not_called()

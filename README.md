@@ -274,7 +274,6 @@ daemon the Claude Code hooks drive:
 
 | Cursor hook event | Wrapper script |
 |-------------------|----------------|
-| `preToolUse` | `hooks/cursor-pre-tool-use.sh` |
 | `postToolUse` | `hooks/cursor-post-tool-use.sh` |
 | `afterAgentResponse` | `hooks/cursor-after-agent-response.sh` |
 
@@ -282,7 +281,7 @@ daemon the Claude Code hooks drive:
 `session_id`, `tool_output` → `tool_response`, `Shell` → `Bash`, …) into the
 Claude Code hook shape; each wrapper then delegates to the matching Claude Code
 hook with `CLAUDE_TTS_PASSTHROUGH=false`, so Cursor's tool stdout stays clean
-(that gate in `hooks/pre-tool-use.sh` / `post-tool-use.sh` defaults to `true` for
+(that gate in `hooks/post-tool-use.sh` defaults to `true` for
 Claude Code, which chains hooks on stdout).
 
 These wrappers are **not** registered in `hooks/hooks.json` — Cursor wiring is
@@ -294,7 +293,6 @@ projects):
 {
   "version": 1,
   "hooks": {
-    "preToolUse": [{ "command": "/abs/path/to/agent-tts/hooks/cursor-pre-tool-use.sh" }],
     "postToolUse": [{ "command": "/abs/path/to/agent-tts/hooks/cursor-post-tool-use.sh" }],
     "afterAgentResponse": [{ "command": "/abs/path/to/agent-tts/hooks/cursor-after-agent-response.sh" }]
   }

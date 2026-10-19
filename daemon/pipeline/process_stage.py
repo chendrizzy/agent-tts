@@ -67,6 +67,8 @@ class ProcessStage:
 
     # CONTRACTION RESTORATION: Map expanded forms → natural contractions
     # CRITICAL: We CONTRACT expanded forms, NOT expand contractions!
+    # Not a contraction site when a clause ends here ("what it is: fine", "it is\nnext", "I have."), or "not" follows (isn't wins).
+    _END = r"(?![ \t]*(?:[.,;:!?)\]\"'\u2014\u2013-]|\n|$|not\b))"
     _EXPANDED_TO_CONTRACTED = {
         # Negative contractions (highest priority - most common in AI output)
         r"\bdo not\b": "don't",
@@ -92,20 +94,20 @@ class ProcessStage:
         # Pronoun + be contractions
         r"\bI am\b": "I'm",
         r"\byou are\b": "you're",
-        r"\bhe is\b": "he's",
-        r"\bshe is\b": "she's",
-        r"\bit is\b": "it's",
+        rf"\bhe is\b{_END}": "he's",
+        rf"\bshe is\b{_END}": "she's",
+        rf"\bit is\b{_END}": "it's",
         r"\bwe are\b": "we're",
         r"\bthey are\b": "they're",
-        r"\bthat is\b": "that's",
-        r"\bwhat is\b": "what's",
-        r"\bwho is\b": "who's",
-        r"\bwhere is\b": "where's",
-        r"\bwhen is\b": "when's",
-        r"\bwhy is\b": "why's",
-        r"\bhow is\b": "how's",
-        r"\bthere is\b": "there's",
-        r"\bhere is\b": "here's",
+        rf"\bthat is\b{_END}": "that's",
+        rf"\bwhat is\b{_END}": "what's",
+        rf"\bwho is\b{_END}": "who's",
+        rf"\bwhere is\b{_END}": "where's",
+        rf"\bwhen is\b{_END}": "when's",
+        rf"\bwhy is\b{_END}": "why's",
+        rf"\bhow is\b{_END}": "how's",
+        rf"\bthere is\b{_END}": "there's",
+        rf"\bhere is\b{_END}": "here's",
 
         # Pronoun + will contractions
         r"\bI will\b": "I'll",
@@ -128,19 +130,15 @@ class ProcessStage:
         r"\bthey would\b": "they'd",
         r"\bthat would\b": "that'd",
 
-        # Pronoun + had contractions (same as would but context-dependent)
-        r"\bI had\b": "I'd",
-        r"\byou had\b": "you'd",
-        r"\bhe had\b": "he'd",
-        r"\bshe had\b": "she'd",
-        r"\bwe had\b": "we'd",
-        r"\bthey had\b": "they'd",
-
-        # Pronoun + have contractions
-        r"\bI have\b": "I've",
-        r"\byou have\b": "you've",
-        r"\bwe have\b": "we've",
-        r"\bthey have\b": "they've",
+        # have/had: "I have to" is not "I've to"; modal + have below
+        rf"\bI have\b(?!\s+to\b){_END}": "I've",
+        rf"\bwe have\b(?!\s+to\b){_END}": "we've",
+        rf"\byou have\b(?!\s+to\b){_END}": "you've",
+        rf"\bthey have\b(?!\s+to\b){_END}": "they've",
+        rf"\bI had\b(?!\s+to\b){_END}": "I'd",
+        rf"\bwe had\b(?!\s+to\b){_END}": "we'd",
+        rf"\byou had\b(?!\s+to\b){_END}": "you'd",
+        rf"\bthey had\b(?!\s+to\b){_END}": "they'd",
         r"\bcould have\b": "could've",
         r"\bwould have\b": "would've",
         r"\bshould have\b": "should've",
@@ -164,7 +162,7 @@ class ProcessStage:
             (re.compile(pattern, re.IGNORECASE), contraction)
             for pattern, contraction in sorted(
                 self._EXPANDED_TO_CONTRACTED.items(),
-                key=lambda x: len(x[0]), reverse=True
+                key=lambda x: len(x[0].split("(?!")[0]), reverse=True  # lookahead must not change precedence
             )
         ]
 

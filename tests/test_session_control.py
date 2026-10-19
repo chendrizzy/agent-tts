@@ -3,6 +3,7 @@
 Hermetic: every test points AGENT_TTS_CONTROL_DIR at tmp_path and builds its own
 git repos under tmp_path. Nothing touches ~/.claude or a running daemon.
 """
+import asyncio
 import json
 import logging
 import os
@@ -341,9 +342,9 @@ def test_override_voice_lands_in_router_decision(tmp_path):
     dec = RouterDecision(should_speak=True, category=Category.STATUS, content="hi", priority=5,
                          source_event_id="e", classified_at=0.0)
     event = {"session_id": "sess-v", "cwd": str(tmp_path)}
-    assert router._apply_project_voice(dec, event).voice is None
+    assert asyncio.run(router._apply_project_voice(dec, event)).voice is None
     sc.set_rule("session", "sess-v", "bm_george")
-    assert router._apply_project_voice(dec, event).voice == "bm_george"
+    assert asyncio.run(router._apply_project_voice(dec, event)).voice == "bm_george"
 
 
 def test_playback_loop_drops_items_of_muted_session():
@@ -379,25 +380,10 @@ def _run_hook_with_listener(tmp_path, script, payload, sid):
     return p, srv, home
 
 
-def test_pre_tool_hook_does_contact_socket_when_not_muted(tmp_path):
-    """Control for the muted cases: same hook + sid, no flag -> it connects."""
-    p, srv, _ = _run_hook_with_listener(
-        tmp_path, "pre-tool-use.sh",
-        {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Pick?"}]}},
-        "weird sid/é:1",
-    )
-    conn, _ = srv.accept()
-    conn.close()
-    srv.close()
-    assert p.returncode == 0
-
 @pytest.mark.parametrize("script,payload", [
     ("post-tool-use.sh", {"tool_name": "Bash", "tool_input": {"command": "ls"},
                            "tool_response": {"stdout": "x"}}),
-    ("pre-tool-use.sh", {"tool_name": "AskUserQuestion",
-                          "tool_input": {"questions": [{"question": "Pick?"}]}}),
     ("speech_output_hook.sh", {"transcript_path": "", "stop_hook_active": False}),
-    ("cursor-pre-tool-use.sh", {"tool_name": "Shell", "tool_input": {"command": "ls"}}),
     ("cursor-post-tool-use.sh", {"tool_name": "Shell", "tool_input": {"command": "ls"}}),
 ])
 def test_hooks_exit_without_contacting_socket_when_muted(tmp_path, script, payload):
@@ -413,7 +399,7 @@ def test_hooks_exit_without_contacting_socket_when_muted(tmp_path, script, paylo
         assert "session muted" in logs
 
 
-@pytest.mark.parametrize("script", ["cursor-pre-tool-use.sh", "cursor-post-tool-use.sh"])
+@pytest.mark.parametrize("script", ["cursor-post-tool-use.sh"])
 def test_cursor_hooks_mute_by_session_id_before_conversation_id(tmp_path, script):
     """cursor_normalize.py sends session_id (else conversation_id) to the daemon; the mute check must match."""
     sc.mute(["sess-A"])

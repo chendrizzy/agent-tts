@@ -414,7 +414,7 @@ def test_project_voice_applies_when_output_context_off():
 
 def test_voice_is_stashed_on_decision():
     r = _voice_router(["v1", "v2", "v3"])
-    d = r._apply_project_voice(_decision("bash out here"), _ev("/repo/alpha"))
+    d = asyncio.run(r._apply_project_voice(_decision("bash out here"), _ev("/repo/alpha")))
     assert d.voice == r._resolve_project_voice("alpha")
 
 
@@ -467,13 +467,13 @@ def test_voice_same_for_all_subdirs_of_one_repo(tmp_path):
     (root / "web").mkdir()
     (root / "api").mkdir()
     r = _voice_router(["v1", "v2", "v3"])
-    d_web = r._apply_project_voice(_decision("built ok"), _ev(str(root / "web")))
-    d_api = r._apply_project_voice(_decision("tests pass"), _ev(str(root / "api")))
+    d_web = asyncio.run(r._apply_project_voice(_decision("built ok"), _ev(str(root / "web"))))
+    d_api = asyncio.run(r._apply_project_voice(_decision("tests pass"), _ev(str(root / "api"))))
     assert d_web.voice == d_api.voice and d_web.voice is not None  # one repo, one voice
     # A separate repo resolves to its OWN root (its own voice slot).
     other = tmp_path / "otherproj"
     (other / ".git").mkdir(parents=True)
-    d_other = r._apply_project_voice(_decision("done"), _ev(str(other)))
+    d_other = asyncio.run(r._apply_project_voice(_decision("done"), _ev(str(other))))
     assert d_other.voice == r._resolve_project_voice("otherproj")
 
 

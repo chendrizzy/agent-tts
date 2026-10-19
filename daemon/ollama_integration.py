@@ -385,7 +385,8 @@ class OllamaClient:
 
     def generate_response(self, prompt: str, model: Optional[str] = None,
                          max_tokens: int = 500, temperature: float = 0.7,
-                         keep_alive: Optional[object] = None) -> Optional[str]:
+                         keep_alive: Optional[object] = None,
+                         timeout: Optional[float] = None) -> Optional[str]:
         """Generate response using Ollama.
 
         keep_alive (optional): forwarded as the top-level /api/generate
@@ -430,7 +431,7 @@ class OllamaClient:
                 payload["keep_alive"] = keep_alive
             response = requests.post(f"{self.api_base}/api/generate",
                                    json=payload,
-                                   timeout=RESPONSE_TIMEOUT)
+                                   timeout=(2, timeout or RESPONSE_TIMEOUT))
 
             if response.status_code == 200:
                 data = response.json()

@@ -37,11 +37,11 @@ after changing these preferences.
 
 Optional post-setup integrations (not part of the automated skill flow):
 
-- Cursor editor. To drive TTS from Cursor too, manually wire the three
-  `cursor-*.sh` hooks (`cursor-pre-tool-use.sh`, `cursor-post-tool-use.sh`,
+- Cursor editor. To drive TTS from Cursor too, manually wire the
+  `cursor-*.sh` hooks (`cursor-post-tool-use.sh`,
   `cursor-after-agent-response.sh`) into Cursor's hook config — they are *not*
   registered in `hooks/hooks.json`, so Claude Code never loads them. They map
-  Cursor's `preToolUse`/`postToolUse`/`afterAgentResponse` events onto the
+  Cursor's `postToolUse`/`afterAgentResponse` events onto the
   Claude Code hooks with `CLAUDE_TTS_PASSTHROUGH=false` (the gate defaults to
   `true`; setting it false keeps Cursor's stdout clean). On macOS the
   after-response hook uses GNU `timeout` — `brew install coreutils`. Knobs:

@@ -235,7 +235,7 @@ None are required; none are secrets. See [`.env.example`](../.env.example).
 | `CLAUDE_TTS_CONFIG` | full path to `config.json` | `~/.config/claude-tts/config.json` |
 | `CLAUDE_TTS_SOCKET` | daemon socket path | `${XDG_RUNTIME_DIR:-/tmp}/claude-tts.sock` |
 | `CLAUDE_TTS_ENABLED` | global on/off | `true` |
-| `CLAUDE_TTS_PASSTHROUGH` | hook stdout passthrough (`hooks/pre-tool-use.sh`, `post-tool-use.sh`); Cursor wrappers set `false` to keep stdout clean | `true` |
+| `CLAUDE_TTS_PASSTHROUGH` | hook stdout passthrough (`hooks/post-tool-use.sh`); Cursor wrappers set `false` to keep stdout clean | `true` |
 | `CLAUDE_TTS_RATE` | speech rate delta | `+20%` |
 | `CLAUDE_TTS_PITCH` | pitch shift | `+3Hz` |
 | `CLAUDE_TTS_VOICE_STYLE` | edge-tts style | `expressive` |

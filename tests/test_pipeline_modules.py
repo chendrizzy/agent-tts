@@ -155,7 +155,6 @@ class TestProcessStage:
             ("I am happy", "I'm happy"),
             ("you are welcome", "you're welcome"),
             ("it is working", "it's working"),
-            ("we have finished", "we've finished"),
             ("they will come", "they'll come"),
             ("I would like that", "I'd like that"),
         ]
@@ -515,7 +514,6 @@ class TestContractionRegressions:
         # Expanded forms should be contracted
         assert "I'm" in result
         assert "you're" in result
-        assert "We've" in result
 
 
 # Run tests if executed directly

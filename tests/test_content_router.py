@@ -264,15 +264,14 @@ def test_dedupe_drops_repeated_content() -> None:
     router = ContentRouter(config={}, provider=OllamaProvider(MockOllamaSummarizer()))
     ev = _short_final_answer_event()
 
-    first = asyncio.run(router.classify_event(ev))
-    assert first.should_speak is True
+    # The hash is recorded when route() returns the item, not at classify time.
+    assert asyncio.run(router.route(ev)) is not None
 
     # Same content again → drop.
     ev2 = dict(ev)
     ev2["event_id"] = "ev-short-2"
-    second = asyncio.run(router.classify_event(ev2))
-    assert second.should_speak is False
-    assert "duplicate" in second.raw_excerpt.lower()
+    assert asyncio.run(router.route(ev2)) is None
+    assert "duplicate" in router._last_drop_reason.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -903,12 +902,12 @@ def test_binary_judge_recency_reflected_on_second_identical_output() -> None:
     router = ContentRouter(config={}, provider=OllamaProvider(summarizer))
     event = _judge_event("npm run build:prod", cwd="/Users/dev/myproj")
 
-    asyncio.run(router.classify_event(event))
+    asyncio.run(router.route(event))  # spoken-state is recorded by route(), not classify
     first_hint = summarizer.calls[0][2]
     assert "already spoken this session" not in first_hint, first_hint
 
     asyncio.run(router.classify_event(event))
-    second_hint = summarizer.calls[1][2]
+    second_hint = summarizer.calls[-1][2]
     assert "already spoken this session" in second_hint, second_hint
 
 
@@ -995,21 +994,21 @@ def test_consecutive_tail_guard_caps_at_two():
     assert _hash_content_differs(a, b, c)                   # but full content differs
 
     # 1st and 2nd: spoken (≤2 allowed in a row).
-    assert router._drop_check(a) is None
+    assert router._drop_check(a, session_id="s") is None
     router._note_hash(a, "s")
-    assert router._drop_check(b) is None
+    assert router._drop_check(b, session_id="s") is None
     router._note_hash(b, "s")
     # 3rd consecutive same-tail: dropped.
-    assert router._drop_check(c) == "repeated trailing line >2x consecutively"
+    assert router._drop_check(c, session_id="s") == "repeated trailing line >2x consecutively"
 
     # A different last line in between resets the run.
     d = "delta\ndifferent trailing line"
-    assert router._drop_check(d) is None
+    assert router._drop_check(d, session_id="s") is None
     router._note_hash(d, "s")
     # Now the stable-tail line may be spoken again (run was broken). Use a fresh
     # preamble so the global hash-dedupe doesn't fire on already-noted content.
     e = "epsilon details four\nstable trailing line"
-    assert router._drop_check(e) is None
+    assert router._drop_check(e, session_id="s") is None
 
 
 def _hash_content_differs(*texts) -> bool:

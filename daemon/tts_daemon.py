@@ -271,6 +271,10 @@ def _recv_line(sock, max_size: int = 1_048_576) -> bytes:
             return b"".join(chunks)
 
 
+class _OllamaNotSelected(Exception):
+    """Control-flow marker: llm_provider.type is not ollama."""
+
+
 class TTSDaemon:
     """
     Persistent TTS Daemon - A REAL service, not a hack!
@@ -383,6 +387,7 @@ class TTSDaemon:
         self._ollama_summarizer = None       # daemon/ollama_summarizer.py:OllamaSummarizer
         self._content_router = None          # daemon/content_router.py:ContentRouter
         self._queue_manager = None           # daemon/pipeline/queue_manager.py:QueueManager
+        self._config_error = None            # set when the chosen config file failed to parse
         self._tts_user_config: dict = {}     # parsed config/tts_user_config.json (empty if absent)
 
         # OBSERVE-02: timestamp of the most recent inbound tool_event,
@@ -782,16 +787,23 @@ class TTSDaemon:
     def start_socket_server(self):
         """Start Unix domain socket server"""
         # Remove old socket if exists
-        if os.path.exists(SOCKET_PATH):
-            os.unlink(SOCKET_PATH)
-        
-        # Create socket
+        try:
+            if os.path.lexists(SOCKET_PATH):
+                os.unlink(SOCKET_PATH)
+        except PermissionError:
+            self.log(f"FATAL: cannot remove stale socket {SOCKET_PATH} (owned by another user?)")
+            print(f"tts_daemon: FATAL - cannot remove {SOCKET_PATH}: permission denied", file=sys.stderr)
+            sys.exit(1)
+
+        # Create socket; umask keeps it owner-only from the instant of bind (no 0o666 window).
         self.server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.server_socket.bind(SOCKET_PATH)
+        old_umask = os.umask(0o177)
+        try:
+            self.server_socket.bind(SOCKET_PATH)
+        finally:
+            os.umask(old_umask)
+        os.chmod(SOCKET_PATH, 0o600)
         self.server_socket.listen(5)
-        
-        # Make socket accessible
-        os.chmod(SOCKET_PATH, 0o666)
         
         self.log(f"Socket server listening on {SOCKET_PATH}")
         
@@ -935,10 +947,12 @@ class TTSDaemon:
                     memory_mb = self.resource_monitor.get_memory_usage()
                     cpu_percent = self.resource_monitor.get_cpu_percent()
 
+                    pipeline_ready = None not in (
+                        self._pipeline_adapter, self._content_router, self._queue_manager)
                     health_status = "healthy"
                     if memory_mb > MAX_MEMORY_MB:
                         health_status = "warning"
-                    if any(cb.state == ComponentState.BROKEN for cb in
+                    if not pipeline_ready or any(cb.state == ComponentState.BROKEN for cb in
                            [self.tts_circuit_breaker, self.audio_circuit_breaker, self.socket_circuit_breaker]):
                         health_status = "broken"
 
@@ -967,6 +981,8 @@ class TTSDaemon:
                     response = {
                         'status': 'success',
                         'health': health_status,
+                        'pipeline_ready': pipeline_ready,
+                        'config_error': self._config_error,
                         'memory_mb': memory_mb,
                         'memory_limit_mb': MAX_MEMORY_MB,
                         'cpu_percent': cpu_percent,
@@ -1266,14 +1282,14 @@ class TTSDaemon:
         session_id = result.session_id or 'default'
         category = result.decision.category
 
-        # ERROR pre-empts via QueueManager (queue-jump + SIGTERM mid-segment).
+        # ERROR bypasses drop/condense via QueueManager.submit_priority (no queue-jump, no SIGTERM).
         if category == _Category.ERROR:
             try:
                 self._run_pipeline_coroutine(
                     self._queue_manager.submit_priority(result), timeout=5.0,
                 )
                 # ERROR also has to actually become an audible utterance —
-                # submit_priority queues the audio jump but doesn't generate.
+                # submit_priority only records it; it doesn't generate audio.
                 # Push the content through the pipeline at PRIORITY_ERROR.
                 # OBSERVE-01: thread request_id (source_event_id from
                 # ContentRouter) through to PipelineAdapter for traceability.
@@ -1531,6 +1547,20 @@ class TTSDaemon:
             return str(resp)
         return str(request_data.get("content") or "")
 
+    def _shadow_logger(self) -> logging.Logger:
+        """Rotating shadow.log writer, built once (mirrors the main-log handler setup)."""
+        lg = logging.getLogger("tts_daemon.shadow")
+        if not lg.handlers:
+            path = Path.home() / ".claude" / "logs" / "tts" / "shadow.log"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            h = logging.handlers.RotatingFileHandler(
+                path, maxBytes=20 * 1024 * 1024, backupCount=3)
+            h.setFormatter(logging.Formatter("%(message)s"))
+            lg.addHandler(h)
+            lg.setLevel(logging.INFO)
+            lg.propagate = False  # keep raw lines out of tts_daemon.log
+        return lg
+
     def _log_shadow_decision(self, kind: str, request_data: dict, result, *,
                              error: str = "", is_shadow: bool = False) -> None:
         """Append a JSONL entry to ~/.claude/logs/tts/shadow.log per Wave 2.5.
@@ -1549,8 +1579,6 @@ class TTSDaemon:
                 it represents real production traffic — still useful audit)
         """
         try:
-            log_path = Path.home() / ".claude" / "logs" / "tts" / "shadow.log"
-            log_path.parent.mkdir(parents=True, exist_ok=True)
             entry = {
                 "ts": time.time(),
                 "kind": kind,
@@ -1582,18 +1610,18 @@ class TTSDaemon:
             if result is None and not error:
                 skipped = self._skip_excerpt(kind, request_data)
                 if skipped:
-                    # Widened 200 -> 600 chars: the drop trigger often lives in
-                    # the body, not the first 200 chars (2026-06-19 recall pass).
-                    entry["skipped_excerpt"] = skipped[:600]
                     entry["skipped_len"] = len(skipped)
+                    if os.environ.get("AGENT_TTS_SHADOW_RAW") == "1":
+                        # Raw tool output: opt-in only (privacy + size). 600 chars: the drop trigger often lives in
+                        # the body, not the first 200 (2026-06-19 recall pass).
+                        entry["skipped_excerpt"] = skipped[:600]
                 # The drop REASON (drop-check / backpressure / dedup) — recovered
                 # from the router, which route() otherwise discards on its None.
                 router = getattr(self, "_content_router", None)
                 reason = getattr(router, "_last_drop_reason", "") if router else ""
                 if reason:
                     entry["skip_reason"] = reason
-            with open(log_path, "a") as f:
-                f.write(json.dumps(entry, default=str) + "\n")
+            self._shadow_logger().info(json.dumps(entry, default=str))
         except Exception as e:
             # Never let shadow logging break the request path.
             try:
@@ -1886,16 +1914,22 @@ class TTSDaemon:
             Path(__file__).resolve().parent.parent / "config" / "tts_user_config.json",
             Path.home() / ".claude" / "tts" / "config" / "tts_user_config.json",
         ]
+        self._config_error = None
         for path in candidates:
+            if not path.exists():
+                continue
+            # First existing file wins; a broken one must not silently fall through to an older copy.
             try:
-                if path.exists():
-                    with open(path, "r") as f:
-                        cfg = json.load(f)
-                    if isinstance(cfg, dict):
-                        self.log(f"Loaded TTS user config from {path}")
-                        return cfg
+                with open(path, "r") as f:
+                    cfg = json.load(f)
+                if not isinstance(cfg, dict):
+                    raise ValueError("top level is not a JSON object")
+                self.log(f"Loaded TTS user config from {path}")
+                return cfg
             except Exception as e:
-                self.log(f"Failed to load tts_user_config from {path}: {e}")
+                self._config_error = f"{path}: {e}"
+                self.logger.error(f"Failed to load tts_user_config from {path}: {e}")
+                return {}
         return {}
 
     def _start_pipeline_singletons(self):
@@ -1984,8 +2018,14 @@ class TTSDaemon:
             self._pipeline_adapter = None
             return  # Without the adapter the rest is moot.
 
-        # 2-3) Ollama client + summarizer.
+        # 2-3) Ollama client + summarizer — only when Ollama is the provider
+        #      (same default as providers.factory.make_provider).
+        _llm_cfg = self._tts_user_config.get("llm_provider")
+        _use_ollama = str((_llm_cfg if isinstance(_llm_cfg, dict) else {})
+                          .get("type", "ollama")).lower() == "ollama"
         try:
+            if not _use_ollama:
+                raise _OllamaNotSelected()
             self._ollama_client = OllamaClient()
             # R2: config-driven summarizer budget + warmth. Defaults embedded so
             # a missing/partial config still works. inner_timeout_s raised to 2.0
@@ -2006,14 +2046,20 @@ class TTSDaemon:
                 f"(inner_timeout={self._ollama_summarizer._timeout_s}s, "
                 f"keep_alive={self._ollama_summarizer._keep_alive})"
             )
+        except _OllamaNotSelected:
+            self.log("llm_provider is not ollama; skipping Ollama client/keep-warm")
         except Exception as e:
             self.log(f"WARN: Ollama init failed; summaries will use fallback: {e}")
             self._ollama_client = None
             self._ollama_summarizer = None
 
         # 4) LLM provider — wraps the summarizer (or NullProvider if Ollama is down).
-        from daemon.providers import make_provider
-        self._llm_provider = make_provider(self._tts_user_config, self._ollama_summarizer)
+        try:
+            from daemon.providers import make_provider
+            self._llm_provider = make_provider(self._tts_user_config, self._ollama_summarizer)
+        except Exception as e:
+            self.log(f"ERROR: make_provider failed: {e}")
+            self._llm_provider = None
 
         # 5) ContentRouter — depends on the provider.
         try:

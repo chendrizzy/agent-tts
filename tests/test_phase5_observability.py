@@ -386,6 +386,8 @@ class TestObserve02HealthAndLastAudio:
         daemon.error_counts = {}
         daemon._pipeline_adapter = None
         daemon._queue_manager = None
+        daemon._content_router = None
+        daemon._config_error = None
 
         # Call handle_client with health request via mock socket.
         mock_sock = MagicMock()

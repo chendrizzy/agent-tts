@@ -19,7 +19,7 @@ def main():
 
     raw = sys.stdin.read()
 
-    # Try to parse as JSON (Stop hook payload). If not JSON, treat raw as content.
+    # Try to parse as JSON (Stop/Notification hook payload). If not JSON, treat raw as content.
     try:
         payload = json.loads(raw)
         session_id = payload.get('session_id', 'default')
@@ -33,7 +33,10 @@ def main():
 
     # Extract latest assistant message from transcript JSONL.
     content = ''
-    if transcript_path and Path(transcript_path).exists():
+    if payload.get('hook_event_name') == 'Notification':
+        # A Notification carries transcript_path too, but its own text is what to speak.
+        content = payload.get('message') or ''
+    elif transcript_path and Path(transcript_path).exists():
         try:
             # Tail the file — the latest assistant entry is near the end.
             with open(transcript_path, 'r') as f:

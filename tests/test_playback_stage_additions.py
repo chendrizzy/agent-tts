@@ -3,7 +3,6 @@ Tests for Wave 1.E PlaybackStage additions:
 
 - PlaybackState.current_proc field
 - AudioSegment.category field (additive on generate_stage.AudioSegment)
-- PlaybackStage.priority_enqueue
 - PlaybackStage.flush_buffer
 - PlaybackStage.get_current_proc
 
@@ -59,57 +58,6 @@ def test_audio_segment_has_category_field():
 
     err_seg = _segment(category=Category.ERROR)
     assert err_seg.category == Category.ERROR
-
-
-@pytest.mark.asyncio
-async def test_priority_enqueue_lands_at_front_of_buffer():
-    stage = PlaybackStage(buffer_size=8)
-    sid = "priority-test"
-
-    await stage.start_session(sid)
-    try:
-        # Pre-load buffer with some normal segments.
-        normal_a = _segment(session_id=sid, chunk_index=10, request_id="normal-a")
-        normal_b = _segment(session_id=sid, chunk_index=11, request_id="normal-b")
-        await stage.enqueue_segment(normal_a)
-        await stage.enqueue_segment(normal_b)
-
-        # Inject a high-priority segment.
-        priority_seg = _segment(
-            session_id=sid,
-            chunk_index=99,
-            request_id="error-1",
-            category=Category.ERROR,
-        )
-        await stage.priority_enqueue(priority_seg)
-
-        # Drain via the underlying queue and assert order.
-        buffer = stage.session_buffers[sid]
-        first = buffer.get_nowait()
-        second = buffer.get_nowait()
-        third = buffer.get_nowait()
-
-        assert first is priority_seg, "priority segment must be at the front"
-        assert second is normal_a, "original ordering of pending must be preserved"
-        assert third is normal_b
-    finally:
-        await stage.stop_session(sid)
-
-
-@pytest.mark.asyncio
-async def test_priority_enqueue_lazily_starts_session():
-    stage = PlaybackStage(buffer_size=4)
-    sid = "lazy-start"
-
-    seg = _segment(session_id=sid, category=Category.ERROR)
-    await stage.priority_enqueue(seg)
-    try:
-        assert sid in stage.session_buffers
-        # The segment should be sitting in the freshly-created buffer.
-        buf = stage.session_buffers[sid]
-        assert buf.get_nowait() is seg
-    finally:
-        await stage.stop_session(sid)
 
 
 @pytest.mark.asyncio

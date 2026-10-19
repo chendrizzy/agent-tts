@@ -29,6 +29,13 @@ All notable changes to claude-tts are documented here. Format follows
   separate, paid **agent-tts manager**; agent-tts works fully without it.
 
 ### Fixed
+- The shadow log now rotates and keeps raw skipped excerpts only with `AGENT_TTS_SHADOW_RAW=1`. An old,
+  huge `shadow.log` rotates to `shadow.log.1` on first write with its raw excerpts intact; delete
+  `~/.claude/logs/tts/shadow.log.*` if you don't want to keep them.
+- Notifications now speak their own `message` instead of re-speaking the last assistant reply, and the
+  SessionEnd hook (which spoke that reply a second time) is gone.
+- Removed the PreToolUse hook and the Cursor `preToolUse` wrapper: they sent a `speak` command the daemon
+  no longer answers, so they never produced audio.
 - `interrupt` now stops the pipeline's in-flight player (it only checked a legacy flag the pipeline never
   set); shutdown shares the same path. The dead single-player state was removed.
 

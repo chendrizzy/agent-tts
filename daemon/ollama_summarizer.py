@@ -185,6 +185,19 @@ _LATENCY_WINDOW_S = 60.0
 _SUMMARIZE_SOFT_TOKENS = 200       # soft target / raised baseline
 _SUMMARIZE_SLACK_TOKENS = 96       # cushion the model may run over soft by
 _SUMMARIZE_HARD_TOKENS = _SUMMARIZE_SOFT_TOKENS + _SUMMARIZE_SLACK_TOKENS  # num_predict
+# Keep the instructions inside the model's default context window.
+_MAX_CONTENT_CHARS = 4000
+_MAX_ITEM_CHARS = 500
+
+
+def cap_head_tail(text: str, limit: int) -> str:
+    """Cap to ``limit`` chars keeping head and tail: a log's verdict lives at the end."""
+    if len(text) <= limit:
+        return text
+    h = limit // 2
+    return f"{text[:h]} \u2026 {text[-h:]}"
+
+
 _JUDGE_MAX_TOKENS = 16             # binary SPEAK/SKIP needs only a token or two
 _BATCH_MAX_TOKENS = 80
 _TEMPERATURE = 0.3  # Low for deterministic summaries.
@@ -279,7 +292,7 @@ class OllamaSummarizer:
         prompt = _SUMMARIZE_PROMPT_TEMPLATE.format(
             category=category.value if isinstance(category, Category) else str(category),
             context_hint=context_hint or "(none)",
-            content=content,
+            content=cap_head_tail(content, _MAX_CONTENT_CHARS),
         )
 
         # The judge needs only a SPEAK/SKIP token; a summary gets the full
@@ -321,7 +334,7 @@ class OllamaSummarizer:
         )
 
         joined = "\n".join(
-            f"- {item.decision.content}" for item in items if item.decision.content
+            f"- {cap_head_tail(item.decision.content, _MAX_ITEM_CHARS)}" for item in items if item.decision.content
         )
 
         prompt = _BATCH_PROMPT_TEMPLATE.format(
@@ -340,6 +353,7 @@ class OllamaSummarizer:
         burst doesn't pay cold-start latency. Called once by tts_daemon
         startup. Returns True on success, False otherwise. Never raises.
         """
+        warm_s = max(self._timeout_s * 30.0, 30.0)
         try:
             # Use a small dedicated timeout — model load can take longer
             # than steady-state inference.
@@ -351,8 +365,9 @@ class OllamaSummarizer:
                     _WARMUP_MAX_TOKENS,
                     _TEMPERATURE,
                     self._keep_alive,
+                    warm_s,  # bound the worker thread's read, not just the await
                 ),
-                timeout=max(self._timeout_s * 30.0, 30.0),
+                timeout=warm_s,
             )
             ok = bool(result)
             if ok:
@@ -422,6 +437,7 @@ class OllamaSummarizer:
                     max_tokens,
                     _TEMPERATURE,
                     self._keep_alive,
+                    self._timeout_s,  # also bound the worker thread's read, not just the await
                 ),
                 timeout=self._timeout_s,
             )

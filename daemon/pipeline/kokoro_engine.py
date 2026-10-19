@@ -181,6 +181,12 @@ class KokoroEngine:
                 self._stats["respawns"] += 1
                 await self._kill()
                 continue
+            except asyncio.TimeoutError:
+                # hung worker: kill so the next call respawns; no retry (would wait again)
+                logger.error("Kokoro synth timed out after %.0fs; killing worker",
+                             self.synth_timeout_s)
+                self._stats["synth_err"] += 1
+                return False  # _do_synthesize already killed the worker under the lock
             except Exception as e:
                 logger.error("Kokoro synth error: %s", e)
                 self._stats["synth_err"] += 1
@@ -189,7 +195,8 @@ class KokoroEngine:
 
     async def _do_synthesize(self, text, out_path, voice, speed) -> bool:
         async with self._lock:  # one in-flight request at a time
-            assert self._proc is not None and self._proc.stdin is not None
+            if self._proc is None or self._proc.stdin is None:
+                raise RuntimeError("worker gone")  # killed while we waited for the lock: retry respawns
             self._req_counter += 1
             req_id = f"r{self._req_counter}"
             req = {
@@ -203,27 +210,32 @@ class KokoroEngine:
             self._proc.stdin.write((json.dumps(req) + "\n").encode())
             await self._proc.stdin.drain()
 
-            # Read until we get the response matching our id (skip stray lines).
-            while True:
-                line = await asyncio.wait_for(
-                    self._proc.stdout.readline(), timeout=self.synth_timeout_s
-                )
-                if not line:
-                    raise RuntimeError("worker closed stdout mid-request")
-                try:
-                    resp = json.loads(line.decode().strip())
-                except Exception:
-                    continue
-                if resp.get("id") != req_id:
-                    continue
-                if resp.get("ok"):
-                    self._stats["synth_ok"] += 1
-                    self._stats["total_synth_ms"] += resp.get("synth_ms", 0.0)
-                    return True
-                self._stats["synth_err"] += 1
-                logger.error("Kokoro worker reported failure: %s",
-                             resp.get("error"))
-                return False
+            try:
+                # Read until we get the response matching our id (skip stray lines).
+                while True:
+                    line = await asyncio.wait_for(
+                        self._proc.stdout.readline(), timeout=self.synth_timeout_s
+                    )
+                    if not line:
+                        raise RuntimeError("worker closed stdout mid-request")
+                    try:
+                        resp = json.loads(line.decode().strip())
+                    except Exception:
+                        continue
+                    if resp.get("id") != req_id:
+                        continue
+                    if resp.get("ok"):
+                        self._stats["synth_ok"] += 1
+                        self._stats["total_synth_ms"] += resp.get("synth_ms", 0.0)
+                        return True
+                    self._stats["synth_err"] += 1
+                    logger.error("Kokoro worker reported failure: %s",
+                                 resp.get("error"))
+                    return False
+            except asyncio.TimeoutError:
+                # Kill before releasing the lock so a waiting synth can't write to the dying worker.
+                await self._kill()
+                raise
 
     def get_stats(self) -> dict:
         ok = self._stats["synth_ok"]

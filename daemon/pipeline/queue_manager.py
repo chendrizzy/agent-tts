@@ -10,12 +10,12 @@ before `process.process()`. Returns:
                     "skipped N" preamble)
 
 ERROR-category items DO NOT go through `intercept`. They go via
-`submit_priority` directly from ContentRouter — pre-emption with queue-jump
-plus optional SIGTERM on the active afplay subprocess.
+`submit_priority` directly from ContentRouter — exempt from every drop/condense
+gate; no queue-jump and no SIGTERM of the active afplay.
 
 Tier state machine with hysteresis (drops back to GREEN only at lag<2000ms):
     GREEN   <3000ms          pass-through
-    YELLOW  3000-8000ms      coalesce same-category 2-item batches via Ollama
+    YELLOW  3000-8000ms      pass-through (raises router pressure only)
     RED     8000-15000ms     drop INFO/STATUS<pri 5; force-summarize remaining
     BLACK   >15000ms or qd>50 nuclear: cancel pending, drop buffer, replay
 
@@ -94,7 +94,7 @@ class QueueManager:
     def __init__(
         self,
         config: dict,
-        ollama_summarizer: "OllamaSummarizer",
+        ollama_summarizer: Optional["OllamaSummarizer"],
         ingest_stage: "IngestStage",
         playback_stage: "PlaybackStage",
     ) -> None:
@@ -182,20 +182,11 @@ class QueueManager:
                 f"(lag={lag_ms:.0f}ms)"
             )
 
-        # 3) GREEN — pass-through (with skipped preamble if any pending).
-        if new_tier == Tier.GREEN:
+        # 3) GREEN / YELLOW — pass-through (with skipped preamble if any pending).
+        #    YELLOW only raises router pressure; there is no coalescing.
+        if new_tier in (Tier.GREEN, Tier.YELLOW):
             state.item_categories.pop(message.request_id, None)
             return self._maybe_prepend_skipped(state, [message])
-
-        # 4) YELLOW — single message can't be merged on its own (need ≥2).
-        #             We pass it through but tag the state so a future burst
-        #             will draw on `_ingest.peek_all` to find peers.
-        #             This is intentionally simple at the per-message level —
-        #             the real coalescing happens when intercept is called on
-        #             a backlog. Optimisation: if peek_all reveals a same-
-        #             category peer pending, condense them as a pair now.
-        if new_tier == Tier.YELLOW:
-            return await self._handle_yellow(message, session_id, state)
 
         # 5) RED — drop low-pri INFO/STATUS, summarize the rest.
         if new_tier == Tier.RED:
@@ -203,6 +194,10 @@ class QueueManager:
 
         # 6) BLACK — nuclear: drop pending buffer, replace with "still working".
         return await self._handle_black(message, session_id, state)
+
+    def end_session(self, session_id: str) -> None:
+        """Drop per-session state when the orchestrator tears the session down."""
+        self._sessions.pop(session_id, None)
 
     def get_pressure(self, session_id: str) -> float:
         """Return the pressure multiplier for the session's current tier."""
@@ -226,37 +221,17 @@ class QueueManager:
         (degrades to 0-contribution rather than raising) so this can be called
         before W1.E/W1.F have wired in their additions.
         """
-        now_ms = time.time() * 1000.0
 
-        in_flight = 0.0
+        in_flight = 0.0  # the playing segment's remaining time is not tracked
         buffered = 0.0
         try:
-            state = self._playback.get_session_state(session_id)
+            # Real durations of the segments waiting to play. shortcut: reads asyncio.Queue's
+            # internal deque (stable in CPython); switch to a tracked sum if that ever changes.
+            buf_q = self._playback.session_buffers.get(session_id)
+            if buf_q is not None:
+                buffered = sum(float(getattr(s, "duration_ms", 0.0)) for s in list(buf_q._queue))
         except Exception:
-            state = None
-
-        if state is not None:
-            # current_segment_ends_at is added by W1.E. Tolerate absence.
-            ends_at = getattr(state, "current_segment_ends_at", None)
-            if ends_at is not None:
-                in_flight = max(0.0, float(ends_at) - now_ms)
-            # playback_buffer added by W1.E too; fall back to session_buffers qsize
-            pb = getattr(state, "playback_buffer", None)
-            if pb is not None:
-                try:
-                    buffered = sum(
-                        float(getattr(s, "duration_ms", 0.0)) for s in pb
-                    )
-                except Exception:
-                    buffered = 0.0
-            else:
-                # Approx: each buffered segment contributes avg chunk duration
-                try:
-                    buf_q = self._playback.session_buffers.get(session_id)
-                    qs = buf_q.qsize() if buf_q is not None else 0
-                    buffered = qs * self._avg_chunk_audio_ms
-                except Exception:
-                    buffered = 0.0
+            buffered = 0.0
 
         # Pending count from ingest. W1.F adds get_pending_count; fallback to
         # session_queues qsize attribute.
@@ -275,8 +250,7 @@ class QueueManager:
         return in_flight + buffered + estimated
 
     async def submit_priority(self, item: RoutedItem) -> bool:
-        """Bypass-path for ERROR. Queue-jumps the playback buffer AND
-        optionally SIGTERMs the active afplay subprocess.
+        """Bypass-path for ERROR: records it so metrics/tier logic see it.
 
         Called directly by ContentRouter for ERROR (not via intercept()).
 
@@ -295,45 +269,8 @@ class QueueManager:
             f"category={item.decision.category.value} preempt#{state.preemptions_total}"
         )
 
-        # 1) Priority enqueue at the front of the playback buffer.
-        try:
-            pe = getattr(self._playback, "priority_enqueue", None)
-            if callable(pe):
-                # priority_enqueue takes an AudioSegment in the spec, but the
-                # actual segment isn't generated yet at this point — this
-                # function exists for already-rendered audio. For ERRORs we
-                # hand off the RoutedItem to the segment-build path. The W2.B
-                # wiring will arrange for ERRORs to short-circuit through the
-                # generate stage with high priority. Here we just call
-                # priority_enqueue if there's a pre-built segment on the item;
-                # otherwise we rely on the daemon's submit path.
-                pre_seg = getattr(item, "audio_segment", None)
-                if pre_seg is not None:
-                    result = pe(pre_seg)
-                    if asyncio.iscoroutine(result):
-                        await result
-        except Exception as e:
-            logger.warning(f"[qm] priority_enqueue failed: {e}")
-
-        # 2) Queue-jump only — do NOT mid-segment interrupt the active afplay.
-        # CUTOFF FIX 2026-06-19: SIGTERM'ing the live segment sliced real
-        # sentences in half (errors are ~42% of decisions and many are stderr
-        # false-positives, so this fired constantly). The ERROR already jumps
-        # the buffer (step 1) and shortens what's pending (step 3); letting the
-        # current segment finish costs ~1 short sentence of delay and keeps the
-        # output intelligible. ponytail: if a class of error ever needs true
-        # barge-in, gate it on a new "critical" flag rather than all ERRORs.
-        logger.debug(
-            "[qm] ERROR queue-jumped; letting active segment finish "
-            "(no mid-segment SIGTERM)"
-        )
-
-        # 3) Trigger condensation cascade on remaining pending items at one tier higher.
-        try:
-            await self._cascade_condense(session_id)
-        except Exception as e:
-            logger.warning(f"[qm] cascade condense failed: {e}")
-
+        # ERROR never goes through intercept (so is never dropped/condensed) and is
+        # not queue-jumped or SIGTERM'd: slicing the live sentence was worse than waiting.
         # Track this ERROR so future intercepts know its category if asked.
         state.item_categories[item.decision.source_event_id] = Category.ERROR
         return True
@@ -457,57 +394,6 @@ class QueueManager:
     # Tier handlers
     # ------------------------------------------------------------------
 
-    async def _handle_yellow(
-        self, message: "IngestMessage", session_id: str, state: _SessionState
-    ) -> Optional[list["IngestMessage"]]:
-        """YELLOW: try to coalesce this message with the next pending peer of
-        the same category. If no peer, pass through (with skipped preamble).
-        """
-        # Look at pending peers in the ingest queue.
-        peers: list["IngestMessage"] = []
-        try:
-            peek = getattr(self._ingest, "peek_all", None)
-            if callable(peek):
-                peers = list(peek(session_id) or [])
-        except Exception:
-            peers = []
-
-        # Filter peers by same category and not the current message.
-        msg_cat = state.item_categories.get(message.request_id, Category.STATUS)
-        same_cat: list["IngestMessage"] = []
-        for p in peers:
-            if p.request_id == message.request_id:
-                continue
-            p_cat = state.item_categories.get(p.request_id, Category.STATUS)
-            if p_cat == msg_cat and p_cat != Category.ERROR:
-                same_cat.append(p)
-            if len(same_cat) >= 1:  # 2-item batches per spec
-                break
-
-        if not same_cat:
-            return self._maybe_prepend_skipped(state, [message])
-
-        # Build a 2-item RoutedItem batch to feed the summarizer/merger.
-        items_for_condense = [
-            self._wrap_routed(message, msg_cat, session_id),
-            self._wrap_routed(same_cat[0], msg_cat, session_id),
-        ]
-        condensed_text = await self._condense_or_fallback(items_for_condense)
-        state.condensations_total += 1
-
-        # Drop the peer from categories side-table and also try to "consume"
-        # it from the ingest queue (best-effort). The queue's actual extraction
-        # is tricky; the orchestrator's loop will hit it next. Mark consumed:
-        state.item_categories.pop(same_cat[0].request_id, None)
-        state.item_categories.pop(message.request_id, None)
-
-        condensed_msg = self._build_replacement_message(
-            template=message,
-            content=condensed_text,
-            condensed_from=[message.request_id, same_cat[0].request_id],
-        )
-        return self._maybe_prepend_skipped(state, [condensed_msg])
-
     async def _handle_red(
         self, message: "IngestMessage", session_id: str, state: _SessionState
     ) -> Optional[list["IngestMessage"]]:
@@ -588,8 +474,8 @@ class QueueManager:
         clamped to exceed the summarizer's inner cap. On timeout / exception /
         disabled-ollama: rule-based merger.
         """
-        # If ollama is disabled due to degradation, use fallback immediately.
-        if self._is_ollama_disabled():
+        # No summarizer (non-ollama provider) or ollama degraded: rule-based merge.
+        if self._ollama is None or self._is_ollama_disabled():
             return self._rule_based_merge(items)
 
         # R2: the old hardcoded 1.0s was LESS than the summarizer's inner cap
@@ -707,35 +593,6 @@ class QueueManager:
         new_first.request_id = first.request_id
         return [new_first] + msgs[1:]
 
-    async def _cascade_condense(self, session_id: str) -> None:
-        """After an ERROR pre-emption, condense remaining pending items at one
-        tier higher than current. Best-effort — we don't synchronously rewrite
-        the queue; we just escalate the tier so subsequent intercept() calls
-        treat backlog more aggressively.
-        """
-        state = self._sessions.get(session_id)
-        if state is None:
-            return
-        # R3/S4: cap the ERROR-driven cascade at YELLOW. The old code bumped one
-        # tier toward BLACK on EVERY ERROR with no downward decay; a few errors
-        # stranded the session at BLACK, where _handle_black flushes ALL pending
-        # non-ERROR audio and speaks a generic "still working" — wholesale
-        # silencing of STATUS/INSIGHT (the frequency complaint). An ERROR should
-        # let the queue COALESCE peers (YELLOW), not nuke them. Genuine sustained
-        # lag still escalates to RED/BLACK via the lag-driven tier computation;
-        # this only removes the blind, count-driven escalation. Never demotes a
-        # session already escalated by real lag.
-        order = [Tier.GREEN, Tier.YELLOW, Tier.RED, Tier.BLACK]
-        idx = order.index(state.current_tier)
-        cap_idx = order.index(Tier.YELLOW)
-        target_idx = min(idx + 1, cap_idx)
-        if target_idx > idx:
-            state.current_tier = order[target_idx]
-            logger.info(
-                f"[qm] cascade: bumped tier to {state.current_tier.value} "
-                f"after ERROR pre-emption (capped at YELLOW)"
-            )
-
     # ------------------------------------------------------------------
     # Ollama health tracking
     # ------------------------------------------------------------------
@@ -799,8 +656,8 @@ class QueueManager:
         self._sessions[session_id].item_categories[request_id] = category
 
     def update_avg_chunk_audio(self, observed_ms: float) -> None:
-        """PlaybackStage (W2.B wiring) calls this after each segment plays
-        with the observed duration so the moving average self-tunes.
+        """The orchestrator calls this after each message is generated
+        with its total audio duration so the moving average self-tunes.
         """
         if observed_ms <= 0:
             return

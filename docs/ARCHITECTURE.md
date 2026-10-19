@@ -9,9 +9,9 @@ swappable plumbing behind three seams.
 ```
  Claude Code                         the daemon (one per user, singleton-guarded)
  ───────────                         ─────────────────────────────────────────────
- PreToolUse  ┐                       ┌─ ContentRouter ── classify → (judge?) → (summarize?)
- PostToolUse ┼─▶ hook script ─▶ unix │     the filter brain · default = silence
- Stop        ┘   (JSON payload)  sock └─ QueueManager ── backpressure tiers · ERROR pre-empt
+ PostToolUse ┐                       ┌─ ContentRouter ── classify → (judge?) → (summarize?)
+ Stop        ┼─▶ hook script ─▶ unix │     the filter brain · default = silence
+ Notification┘   (JSON payload)  sock └─ QueueManager ── backpressure tiers · ERROR exempt
                                           │
                                           ▼  RoutedItem
                                    Ingest ▶ Process ▶ Generate ▶ Playback
@@ -26,9 +26,9 @@ event as JSON and writes one line to the daemon's unix socket. The daemon
 pipeline to your speakers. If the daemon isn't running, the hook fails silently:
 no daemon, no noise, no broken builds.
 
-**Cursor** drives the same daemon: `hooks/cursor-pre-tool-use.sh`,
-`cursor-post-tool-use.sh`, and `cursor-after-agent-response.sh` map Cursor's
-`preToolUse` / `postToolUse` / `afterAgentResponse` events — normalized by
+**Cursor** drives the same daemon: `hooks/cursor-post-tool-use.sh`
+and `cursor-after-agent-response.sh` map Cursor's
+`postToolUse` / `afterAgentResponse` events — normalized by
 `cursor_normalize.py` — onto the Claude Code hooks, delegating with
 `CLAUDE_TTS_PASSTHROUGH=false` so the wrapped hooks keep stdout clean for Cursor.
 The wiring is manual (the `cursor-*.sh` are *not* registered in
@@ -179,15 +179,17 @@ a stale audio queue:
 | Tier   | Multiplier | Roughly when        | Effect                                   |
 |--------|-----------|----------------------|------------------------------------------|
 | GREEN  | 1.0       | lag < 3 s            | pass-through                             |
-| YELLOW | 1.5       | 3–8 s                | coalesce same-category pairs             |
+| YELLOW | 1.5       | 3–8 s                | pass-through (router gets stricter)      |
 | RED    | 2.5       | 8–15 s               | drop low-priority status; force-summarize|
 | BLACK  | 5.0       | > 15 s or queue > 50 | flush non-errors, say "still working"    |
 
 Hysteresis keeps it from flapping (it only drops back to GREEN under ~2 s lag).
-**`ERROR` is exempt from every gate** — it always speaks. An error queue-jumps
-to the front of the playback buffer (`priority_enqueue`); it does *not* cut off
-the currently-playing segment (that mid-utterance `SIGTERM` was removed because
-slicing a sentence mid-word is worse than a half-second wait).
+**`ERROR` is exempt from every gate** — it is never dropped or condensed. It
+does *not* queue-jump or cut off the currently-playing segment (the mid-utterance
+`SIGTERM` was removed because slicing a sentence mid-word is worse than a
+half-second wait). Lag is estimated from the moving average of real segment
+durations. A session with no message for 10 minutes and nothing pending or
+playing is torn down; the next message restarts it.
 
 ## Why you can trust the demo
 

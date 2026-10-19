@@ -1,6 +1,5 @@
 """Unix-socket client for the hooks. Values arrive as argv, never spliced into code.
 
-  speak <socket> <session_id> <priority> <source> <text>   fire-and-forget speak
   raw   <socket> <payload>                                  send line, log ack on stderr
   health <socket>                                           print health JSON, exit 1 on error
 """
@@ -17,21 +16,9 @@ def main():
     # at all. Armed before any work. Exit 75 (EX_TEMPFAIL) marks a ceiling hit.
     mode, path = sys.argv[1], sys.argv[2]
     signal.signal(signal.SIGALRM, lambda *_a: os._exit(75))
-    signal.setitimer(signal.ITIMER_REAL, {"speak": 3, "raw": 5, "health": 1.0}[mode])
+    signal.setitimer(signal.ITIMER_REAL, {"raw": 5, "health": 1.0}[mode])
 
-    if mode == "speak":
-        try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.settimeout(2.0)
-            s.connect(path)
-            s.sendall(json.dumps({
-                "command": "speak", "text": sys.argv[6], "session_id": sys.argv[3],
-                "priority": int(sys.argv[4]), "source": sys.argv[5],
-            }).encode("utf-8"))
-            s.close()
-        except Exception:
-            pass
-    elif mode == "raw":
+    if mode == "raw":
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(3.0)
         try:

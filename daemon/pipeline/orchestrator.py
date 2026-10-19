@@ -29,6 +29,8 @@ if TYPE_CHECKING:  # avoid runtime import cycle (queue_manager imports types onl
 
 logger = logging.getLogger(__name__)
 
+SESSION_IDLE_TIMEOUT_S = 600.0  # a quiet session frees its tasks; submit() restarts it
+
 
 @dataclass
 class PipelineMetrics:
@@ -103,6 +105,8 @@ class TTSPipelineOrchestrator:
         self.metrics = PipelineMetrics()
         self._running = False
         self._session_tasks: Dict[str, asyncio.Task] = {}
+        self._teardowns: Dict[str, asyncio.Event] = {}  # set once a session's cleanup finished
+        self._session_idle_s = SESSION_IDLE_TIMEOUT_S
         self._config = {
             'workers_per_session': workers_per_session,
             'chunk_size': chunk_size,
@@ -236,6 +240,10 @@ class TTSPipelineOrchestrator:
         if not session_id:
             session_id = str(uuid.uuid4())[:8]
 
+        # A teardown in flight would delete this message's queue and buffers.
+        while (done := self._teardowns.get(session_id)) is not None:
+            await done.wait()
+
         message = IngestMessage(
             content=content,
             session_id=session_id,
@@ -288,13 +296,17 @@ class TTSPipelineOrchestrator:
         """
         await self.playback.start_session(session_id)
         default_voice = voice or self._config['voice']
+        last_active = time.time()
 
         while self._running:
             try:
                 # 1. Consume from ingest (event-driven, no polling!)
                 message = await self.ingest.consume(session_id, timeout=1.0)
                 if not message:
+                    if self._session_idle(session_id, last_active):
+                        break
                     continue
+                last_active = time.time()
 
                 start_time = time.time()
 
@@ -332,12 +344,17 @@ class TTSPipelineOrchestrator:
 
                     # 3. Generate audio (parallel workers)
                     message_voice = msg.voice or default_voice
+                    msg_audio_ms = 0.0
                     async for segment in self.generate.generate(processed, message_voice):
                         self.metrics.segments_generated += 1
 
                         # 4. Enqueue for playback (per-session buffer)
                         await self.playback.enqueue_segment(segment)
+                        msg_audio_ms += segment.duration_ms
                         self.metrics.segments_played += 1
+                    if self.queue_manager is not None:
+                        # lag = pending messages x avg, so feed whole-message audio
+                        self.queue_manager.update_avg_chunk_audio(msg_audio_ms)
 
                 # Record end-to-end latency for the originating ingest event.
                 latency_ms = (time.time() - start_time) * 1000
@@ -355,31 +372,50 @@ class TTSPipelineOrchestrator:
                 self.metrics.errors += 1
                 continue
 
-        # Cleanup on exit
-        await self.playback.stop_session(session_id)
-        await self.generate.cleanup_session(session_id)
-        await self.ingest.cleanup_session(session_id)
-        self.metrics.active_sessions -= 1
-
-        if session_id in self._session_tasks:
+        # Unregister before any await so a submit() racing the teardown starts a fresh task,
+        # but it must wait for the cleanup (submit awaits _teardowns) or the cleanup eats its state.
+        done = self._teardowns[session_id] = asyncio.Event()
+        if self._session_tasks.get(session_id) is asyncio.current_task():
             del self._session_tasks[session_id]
+            self.metrics.active_sessions -= 1
+        try:
+            await self._cleanup_session(session_id)
+        finally:
+            self._teardowns.pop(session_id, None)
+            done.set()
 
         logger.debug(f"Session {session_id} processing ended")
 
-    async def end_session(self, session_id: str):
-        """Explicitly end a session and cleanup resources."""
-        if session_id in self._session_tasks:
-            self._session_tasks[session_id].cancel()
-            try:
-                await self._session_tasks[session_id]
-            except asyncio.CancelledError:
-                pass
-            del self._session_tasks[session_id]
+    def _session_idle(self, session_id: str, last_active: float) -> bool:
+        """True when the session has had no message for the idle timeout and holds no work."""
+        if time.time() - last_active < self._session_idle_s:
+            return False
+        state = self.playback.get_session_state(session_id)
+        buf = self.playback.session_buffers.get(session_id)
+        return (
+            self.ingest.get_pending_count(session_id) == 0
+            and not (state and state.is_playing)
+            and not (buf and buf.qsize())
+        )
 
+    async def _cleanup_session(self, session_id: str):
         await self.playback.stop_session(session_id)
         await self.generate.cleanup_session(session_id)
         await self.ingest.cleanup_session(session_id)
-        self.metrics.active_sessions = max(0, self.metrics.active_sessions - 1)
+        if self.queue_manager is not None:
+            self.queue_manager.end_session(session_id)
+
+    async def end_session(self, session_id: str):
+        """Explicitly end a session and cleanup resources."""
+        task = self._session_tasks.get(session_id)
+        if task:
+            task.cancel()  # the task unregisters itself and runs _cleanup_session
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        else:
+            await self._cleanup_session(session_id)
 
     def get_metrics(self) -> Dict[str, Any]:
         """Get comprehensive pipeline metrics."""
