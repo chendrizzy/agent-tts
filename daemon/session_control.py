@@ -688,7 +688,7 @@ def main(argv: list) -> int:
             out = {"rules": set_rule(_flag(args, "--scope"), _flag(args, "--target"),
                                      _flag(args, "--value"), _flag(args, "--field"))}
         elif cmd == "clear-rule":
-            out = {"rules": clear_rule(_flag(args, "--scope"), _flag(args, "--target"), _flag(args, "--field"))}
+            out = {"rules": clear_rule(_flag(args, "--scope"), _flag(args, "--target"), _opt(args, "--field", None))}  # no --field: whole rule
         elif cmd == "config-get":
             out = config_state()
         elif cmd == "config-set":

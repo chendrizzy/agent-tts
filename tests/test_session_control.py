@@ -571,3 +571,11 @@ def test_voice_scope_lookup_skips_git_and_config_when_unused(monkeypatch):
     assert sc.resolve_setting("rate", "s", "/some/cwd") == (1.1, "session")
     assert sc.resolve_setting("frequency", "s", "/some/cwd") == (3, "all")
     assert sc.override_voice("s", "/some/cwd") is None
+
+
+def test_cli_clear_rule_without_field_removes_the_whole_rule(tmp_path, monkeypatch, capsys):
+    # The panel's plain "clear" sends no --field; it used to fail with "missing --field".
+    monkeypatch.setenv("AGENT_TTS_CONTROL_DIR", str(tmp_path))
+    assert sc.main(["set-rule", "--scope", "project", "--target", "/x", "--field", "volume", "--value", "0.5"]) == 0
+    assert sc.main(["clear-rule", "--scope", "project", "--target", "/x"]) == 0
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["rules"] == {}
