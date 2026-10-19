@@ -157,9 +157,20 @@ or `$AGENT_TTS_CONTROL_DIR`):
 |---------|--------------|
 | `mute SID...` / `unmute SID...` | Pause or resume one session; the hooks stop sending its events and the daemon drops what it had queued |
 | `set-voice --scope S --key K --voice V` / `clear-voice` | Voice rules at `session`, `branch`, `worktree`, `project` (all of a repo's worktrees), `workspace` (the folder holding projects) or `all`; the narrowest wins, no restart |
+| `pause` / `resume` | Global pause: the daemon drops every line (queued and new) and cuts what is playing, until `resume` |
+| `daemon-status` / `daemon-start` / `daemon-stop` / `daemon-restart` | Control the background service (launchd, `systemd --user`, or a plain process). `daemon-stop` writes a `stay_down` flag that the session-start hook respects, so it stays down until `daemon-start` |
 | `feedback --label useful\|noise\|urgent\|verbose ...` | Rate a spoken line: the router learns per project, category and kind of line what to drop, raise or condense (fades over two weeks); `tuning` shows it, `forget` undoes it |
 | `notifications [--set KEY=VALUE]` | The low-disk alert (`popup`, `log`, `off`, and how often) and which Claude Code notifications are spoken |
 | `snapshot` / `identify` | Every session's resolved voice, mute and git identity |
+
+### Volume
+
+The level of a spoken line is the master `voice.volume` from your config times the
+scoped `volume` rule (`set-rule --scope project --target T --field volume --value 0.5`;
+`clear-rule --field volume` removes it). Range 0 to 2; 0 silences the scope. macOS applies
+it with `afplay -v`. Linux players differ: `mpv`, `pw-play` and `paplay` scale (up to 2x),
+`ffplay` can only attenuate (capped at 100%), and `aplay` has no volume option, so it
+plays at system volume.
 
 A fresh `dictating` file in the control dir holds playback (lines queue, none are dropped) so a
 dictation tool can keep TTS out of the mic; a flag older than 150 s is ignored.

@@ -127,7 +127,7 @@ class TestSerializesAndDoesNotStall(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.02)
                 ticks += 1
 
-        async def fake_inner(audio_path, state=None, request_id=None):
+        async def fake_inner(audio_path, state=None, request_id=None, volume=None):
             # Stands in for real playback: holds the cross-session lock for a
             # while. Real playback awaits a subprocess; this awaits a sleep.
             nonlocal concurrent, max_concurrent

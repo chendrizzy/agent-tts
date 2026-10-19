@@ -38,6 +38,12 @@ log() {
     echo "[TTS SessionStart] $1" >&2
 }
 
+# Kill sets this flag (panel / session_control daemon-stop); Boot clears it.
+if [ -e "${AGENT_TTS_CONTROL_DIR:-$HOME/.claude/tts_control}/stay_down" ]; then
+    log "Daemon was killed (stay_down flag set) - not starting; Boot it from the panel"
+    exit 0
+fi
+
 # ============================================================================
 # Daemon Status Check (Multi-Level)
 # ============================================================================

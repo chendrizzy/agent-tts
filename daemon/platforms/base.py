@@ -96,29 +96,34 @@ class PlatformMacOS(Platform):
 _LINUX_PLAYERS = ("ffplay", "mpv", "pw-play", "paplay", "aplay")
 
 
-def _linux_player_argv(player: str, audio_path: str) -> List[str]:
-    """Quiet, no-GUI argv for a given Linux player."""
+def _linux_player_argv(player: str, audio_path: str, volume: float = 1.0) -> List[str]:
+    """Quiet, no-GUI argv for a given Linux player, with ``volume`` (0..2) where it can apply.
+
+    ffplay cannot amplify (clamped at 100%); aplay has no volume option, so it plays at
+    system volume.
+    """
     if player == "ffplay":
-        return ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", audio_path]
+        return ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
+                "-volume", str(min(100, round(volume * 100))), audio_path]
     if player == "mpv":
-        return ["mpv", "--no-video", "--really-quiet", audio_path]
+        return ["mpv", "--no-video", "--really-quiet", "--volume-max=200",
+                f"--volume={volume * 100:g}", audio_path]
     if player == "aplay":
         return ["aplay", "-q", audio_path]
-    # pw-play / paplay: the filename is the only required positional arg.
-    return [player, audio_path]
+    if player == "pw-play":
+        return ["pw-play", f"--volume={volume:g}", audio_path]
+    return ["paplay", f"--volume={int(volume * 65536)}", audio_path]
 
 
 class PlatformLinux(Platform):
     UNIT_NAME = "claude-tts.service"
 
     def build_player_cmd(self, audio_path: str, volume: float) -> List[str]:
-        # volume intentionally ignored: TTS-specific gain is macOS-only (afplay -v);
-        # on Linux the audio daemon (PipeWire/PulseAudio/ALSA) owns system volume.
         for player in _LINUX_PLAYERS:
             if shutil.which(player):
-                return _linux_player_argv(player, audio_path)
+                return _linux_player_argv(player, audio_path, volume)
         # Nothing installed: best-effort mpv argv (fails loudly via rc != 0).
-        return _linux_player_argv("mpv", audio_path)
+        return _linux_player_argv("mpv", audio_path, volume)
 
     def _unit_path(self) -> Path:
         xdg = os.environ.get("XDG_CONFIG_HOME")

@@ -59,6 +59,8 @@ verify:
 		tests/test_release_notes.py \
 		tests/test_calibration.py \
 		tests/test_service_render.py \
+		tests/test_service_ctl.py \
+		tests/test_pause_volume.py \
 		tests/test_systemd_render.py \
 		tests/test_config_render.py \
 		tests/test_output_context.py \

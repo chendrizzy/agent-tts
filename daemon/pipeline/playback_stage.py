@@ -200,8 +200,17 @@ class PlaybackStage:
                 if stop_event.is_set():
                     break
 
-                if session_control.is_muted(session_id):
-                    continue  # muted after this was queued: drop, don't speak
+                if session_control.is_paused() or session_control.is_muted(session_id):
+                    continue  # paused/muted after this was queued: drop, don't speak
+
+                # Master voice.volume x the scoped volume rule; off the loop because a
+                # cache-miss lookup runs git.
+                scoped, _ = await asyncio.to_thread(
+                    session_control.resolve_setting, 'volume', session_id,
+                    spoken_log.get_session_cwd(session_id))
+                volume = max(0.0, min(2.0, self.volume * (1.0 if scoped is None else scoped)))
+                if volume <= 0:
+                    continue  # volume 0 is silence: drop like mute
 
                 async with lock:  # Per-session lock only!
                     state.is_playing = True
@@ -220,7 +229,7 @@ class PlaybackStage:
                     # boundary (grep `request_id=<uuid>` end-to-end).
                     success = await self._play_audio(
                         segment.audio_path, state=state,
-                        request_id=segment.request_id,
+                        request_id=segment.request_id, volume=volume,
                     )
 
                     if success:
@@ -235,7 +244,7 @@ class PlaybackStage:
                             session_id=session_id,
                             category=getattr(segment.category, "value", None),
                         )
-                    else:
+                    elif success is not None:  # None = dropped (paused/muted)
                         state.errors += 1
                         self._stats['playback_errors'] += 1
 
@@ -371,6 +380,7 @@ class PlaybackStage:
         audio_path: str,
         state: Optional[PlaybackState] = None,
         request_id: Optional[str] = None,
+        volume: Optional[float] = None,
     ) -> bool:
         """
         Play audio file asynchronously.
@@ -395,20 +405,26 @@ class PlaybackStage:
             return False
 
         async with self._cross_session_audio_lock:
-            return await self._play_audio_inner(audio_path, state, request_id)
+            return await self._play_audio_inner(audio_path, state, request_id, volume)
 
     async def _play_audio_inner(
         self,
         audio_path: str,
         state: Optional[PlaybackState] = None,
         request_id: Optional[str] = None,
-    ) -> bool:
+        volume: Optional[float] = None,
+    ) -> Optional[bool]:
         """Inner playback — caller has already acquired _cross_session_audio_lock.
 
         AUDIO-03: the try/finally below ensures the subprocess transport is
         closed on CancelledError so file descriptors do not leak even when the
         task is cancelled mid-playback (CPython issue #100055).
         """
+        # Paused/muted while this waited on the cross-session lock: Pause's interrupt
+        # only kills the player running at that instant. None = dropped, not an error.
+        sid = getattr(getattr(state, 'current_segment', None), 'session_id', None)
+        if session_control.is_paused() or (sid is not None and session_control.is_muted(sid)):
+            return None
         proc = None
         # OBSERVE-01: log at playback start so request_id is traceable
         # at the boundary where audio actually begins.
@@ -418,7 +434,8 @@ class PlaybackStage:
         try:
             # AUDIO-02: canonical player spawn — delegated to the Platform seam.
             # macOS afplay (+ -v volume hack), Linux mpv, Windows ffplay.
-            proc = await self._platform_impl.spawn_player(audio_path, self.volume)
+            proc = await self._platform_impl.spawn_player(
+                audio_path, self.volume if volume is None else volume)
 
             if state is not None:
                 state.current_proc = proc

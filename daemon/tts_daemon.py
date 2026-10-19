@@ -856,6 +856,11 @@ class TTSDaemon:
 
             from daemon import session_control  # stdlib leaf, imported lazily like spoken_log above
             if command in ('tool_event', 'stop_event') and isinstance(request_data, dict) \
+                    and session_control.is_paused():
+                response = {'status': 'ok', 'event_id': request_data.get('event_id'),
+                            'queued': False, 'reason': 'paused'}
+
+            elif command in ('tool_event', 'stop_event') and isinstance(request_data, dict) \
                     and session_control.is_muted(request_data.get('session_id')):
                 response = {'status': 'ok', 'event_id': request_data.get('event_id'),
                             'queued': False, 'reason': 'muted'}

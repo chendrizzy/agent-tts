@@ -6,6 +6,8 @@ command prints ONE JSON document on stdout, errors as ``{"error": msg}`` / exit 
 
 State lives under ``paths.control_dir()``:
     muted/<safe_sid>   flag file, content ``{"since": <epoch>}``
+    paused             global flag file, content ``{"since": <epoch>}``; the daemon drops lines while it exists
+    stay_down          flag file: Kill sets it, Boot/Restart clear it; hooks never auto-start while it exists
     voices.json        ``{"version": 2, "rules": {"<scope>:<key>": {<any of FIELDS>, "set_at"}}}``
                        (version 1 files, voice-only entries, read unchanged)
 
@@ -95,6 +97,34 @@ def muted() -> list:
         return sorted(p.name for p in _muted_dir().iterdir() if p.is_file())
     except OSError:
         return []
+
+
+def _paused_path() -> Path:
+    return paths.control_dir() / "paused"
+
+
+def is_paused() -> bool:
+    try:
+        return _paused_path().exists()
+    except Exception:
+        return False
+
+
+def pause() -> None:
+    """Global pause: set the flag, then best-effort cut what is playing now (daemon down is fine)."""
+    d = paths.control_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    if not is_paused():
+        _paused_path().write_text(json.dumps({"since": time.time()}), encoding="utf-8")
+    from daemon import service_ctl
+    service_ctl.socket_request({"command": "interrupt"})
+
+
+def resume() -> None:
+    try:
+        _paused_path().unlink()
+    except FileNotFoundError:
+        pass
 
 
 DICTATION_HOLD_MAX_S = 150  # Claude Code caps a recording at 2 min; a crashed helper's flag expires
@@ -543,7 +573,7 @@ def _snapshot(stdin_text: str) -> dict:
     with ThreadPoolExecutor(max_workers=8) as ex:
         identities = dict(zip(cwds, ex.map(identify, cwds)))
     info = voices_info()
-    return {"config": info, "muted": muted(), "rules": load_rules(), "identities": identities,
+    return {"config": info, "muted": muted(), "paused": is_paused(), "rules": load_rules(), "identities": identities,
             "resolved": {s["session_id"]: resolve(s["session_id"], s.get("cwd"), info)
                          for s in sessions}}
 
@@ -563,6 +593,16 @@ def main(argv: list) -> int:
         cmd, args = (argv[0] if argv else ""), argv[1:]
         if cmd == "snapshot":
             out = _snapshot(sys.stdin.read())
+        elif cmd in ("pause", "resume"):
+            (pause if cmd == "pause" else resume)()
+            out = {"paused": is_paused()}
+        elif cmd in ("daemon-status", "daemon-start", "daemon-stop", "daemon-restart"):
+            from daemon import service_ctl
+            try:
+                out = service_ctl.run(cmd.split("-", 1)[1])
+            except service_ctl.Failed as exc:  # contract: exit 1 + one-line stderr reason
+                print(exc, file=sys.stderr)
+                return 1
         elif cmd in ("mute", "unmute"):
             (mute if cmd == "mute" else unmute)(args)
             out = {"muted": muted()}
@@ -605,7 +645,7 @@ def main(argv: list) -> int:
                 updates[k] = v
             out = {"prefs": set_notification_prefs(updates) if updates else notification_prefs()}
         else:
-            raise ValueError("usage: session_control.py snapshot|mute|unmute|set-voice|clear-voice|set-rule|clear-rule|identify|feedback|implicit-pause|tuning|forget|notifications")
+            raise ValueError("usage: session_control.py snapshot|pause|resume|daemon-status|daemon-start|daemon-stop|daemon-restart|mute|unmute|set-voice|clear-voice|set-rule|clear-rule|identify|feedback|implicit-pause|tuning|forget|notifications")
     except Exception as exc:  # contract: every failure is {"error": ...} + exit 2
         print(json.dumps({"error": str(exc)}))
         return 2

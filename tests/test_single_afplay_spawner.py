@@ -120,6 +120,14 @@ CENSUS: Dict[Tuple[str, str], dict] = {
         "reason": "starts the persistent Kokoro synth worker (a Python process); "
                   "it SYNTHESIZES to a file and never plays it",
     },
+    ("service_ctl.py", "_run"): {
+        "audio": False, "calls": 1,
+        "reason": "launchctl/systemctl/ps argv lists, to find, stop and start the daemon service",
+    },
+    ("service_ctl.py", "_spawn"): {
+        "audio": False, "calls": 1,
+        "reason": "starts the daemon itself (detached) when no service manager owns it",
+    },
     ("platforms/base.py", "install_service"): {
         "audio": False, "calls": 6,
         "reason": "launchctl bootout/bootstrap/kickstart on macOS and "

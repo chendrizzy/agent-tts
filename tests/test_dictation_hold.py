@@ -28,7 +28,7 @@ def test_dictation_holds_then_plays_everything(tmp_path, monkeypatch):
         stage = PlaybackStage(buffer_size=8)
         played = []
 
-        async def fake_play(audio_path, state=None, request_id=None):
+        async def fake_play(audio_path, state=None, request_id=None, volume=None):
             played.append(state.current_segment.text)
             return True
 
