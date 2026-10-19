@@ -321,18 +321,6 @@ class TTSDaemon:
         self.global_audio_lock_file = Path.home() / ".claude" / "global_audio.lock"
         self.global_audio_lock_timeout = 30  # Maximum time to wait for global lock
 
-        # Playback state tracking for interrupt capability
-        self.current_process = None
-        self.current_process_lock = threading.Lock()
-        self.interrupt_event = threading.Event()  # Event-based interrupt signaling
-        self.current_text = ""
-        self.current_session_id = ""
-        self.playback_start_time = 0
-        self.estimated_duration = 0
-        self.is_playing = False
-        self.state_callbacks = []
-        self.state_callbacks_lock = threading.Lock()
-
         # Processing threads with weak references
         self.processing_threads: Dict[str, threading.Thread] = {}
         self.stop_signal = threading.Event()
@@ -1047,7 +1035,11 @@ class TTSDaemon:
             elif command == 'interrupt':
                 # Interrupt current TTS playback
                 force = request_data.get('force', True)
-                stopped = self.stop_playback(force=force)
+                try:
+                    stopped = self._stop_pipeline_audio()
+                except Exception as e:
+                    stopped = False
+                    self.log(f"interrupt: pipeline stop failed: {e}")
 
                 if stopped:
                     response = {
@@ -1695,146 +1687,44 @@ class TTSDaemon:
 
             return selected_voice
     
-    def stop_playback(self, force: bool = False) -> bool:
-        """
-        Stop current TTS playback immediately using event-based signaling
+    def _pipeline_playback(self):
+        """The pipeline's PlaybackStage, or None before it boots."""
+        if self._pipeline_adapter is None:
+            return None
+        return getattr(
+            self._pipeline_adapter, '_playback_stage', None
+        ) or getattr(
+            getattr(self._pipeline_adapter, '_orchestrator', None),
+            'playback', None,
+        )
 
-        Args:
-            force: If True, kill process immediately without cleanup
-
-        Returns:
-            True if playback was stopped, False if nothing was playing
-        """
-        # Check if there's anything to stop (no lock held)
-        if not self.is_playing:
-            return False
-
-        # Signal interrupt event (atomic operation, no lock needed)
-        self.interrupt_event.set()
-
-        # Terminate process if available (brief lock just for process access)
-        process_to_kill = None
-        with self.current_process_lock:
-            process_to_kill = self.current_process
-
-        if process_to_kill:
-            try:
-                if force:
-                    # Force kill immediately
-                    try:
-                        process_to_kill.terminate()
-                        process_to_kill.wait(timeout=0.05)  # Wait 50ms max
-                    except subprocess.TimeoutExpired:
-                        process_to_kill.kill()
-                        process_to_kill.wait(timeout=0.01)
-                else:
-                    # Graceful termination
-                    process_to_kill.terminate()
-                    try:
-                        process_to_kill.wait(timeout=0.1)
-                    except subprocess.TimeoutExpired:
-                        process_to_kill.kill()
-
-                self.logger.info("Playback stopped successfully")
-                return True
-
-            except Exception as e:
-                self.log_error(ErrorCategory.AUDIO_PLAYBACK, f"Error stopping playback", e)
-                return False
-        else:
-            return False
-
-    def _clear_playback_state(self):
-        """Clear playback state after stop"""
-        self.current_process = None
-        self.current_text = ""
-        self.current_session_id = ""
-        self.playback_start_time = 0
-        self.estimated_duration = 0
-        self.is_playing = False
+    def _stop_pipeline_audio(self) -> bool:
+        """Terminate the pipeline's in-flight player, if any (see PlaybackStage.stop_current)."""
+        playback = self._pipeline_playback()
+        return playback.stop_current() if playback is not None else False
 
     def get_playback_state(self) -> Dict[str, Any]:
-        """
-        Get current playback state for visual indicator
-
-        Returns:
-            Dictionary containing:
-            - is_playing: bool
-            - current_text: str (text being spoken)
-            - current_session_id: str
-            - progress_percent: float (0-100)
-            - time_remaining_ms: int (estimated milliseconds remaining)
-            - elapsed_ms: int (milliseconds elapsed)
-        """
-        # No lock needed - atomic reads of simple types
-        if not self.is_playing:
-            return {
-                'is_playing': False,
-                'current_text': '',
-                'current_session_id': '',
-                'progress_percent': 0.0,
-                'time_remaining_ms': 0,
-                'elapsed_ms': 0
-            }
-
-        # Read state atomically (no lock - these are simple assignments)
-        elapsed = time.time() - self.playback_start_time
-        elapsed_ms = int(elapsed * 1000)
-        current_text = self.current_text
-        current_session_id = self.current_session_id
-        estimated_duration = self.estimated_duration
-
-        # Calculate progress
-        if estimated_duration > 0:
-            progress_percent = min(100.0, (elapsed / estimated_duration) * 100)
-            time_remaining = max(0, estimated_duration - elapsed)
-            time_remaining_ms = int(time_remaining * 1000)
-        else:
-            progress_percent = 0.0
-            time_remaining_ms = 0
-
+        """Current playback state, read from the pipeline's PlaybackStage."""
+        playback = self._pipeline_playback()
+        for session_id, state in (list(playback.session_states.items()) if playback else []):
+            segment = state.current_segment
+            if state.is_playing and segment is not None:
+                return {
+                    'is_playing': True,
+                    'current_text': segment.text,
+                    'current_session_id': session_id,
+                    'progress_percent': 0.0,
+                    'time_remaining_ms': 0,
+                    'elapsed_ms': 0
+                }
         return {
-            'is_playing': True,
-            'current_text': current_text,
-            'current_session_id': current_session_id,
-            'progress_percent': progress_percent,
-            'time_remaining_ms': time_remaining_ms,
-            'elapsed_ms': elapsed_ms
+            'is_playing': False,
+            'current_text': '',
+            'current_session_id': '',
+            'progress_percent': 0.0,
+            'time_remaining_ms': 0,
+            'elapsed_ms': 0
         }
-
-    def register_state_callback(self, callback: callable):
-        """
-        Register callback for playback state changes
-
-        Args:
-            callback: Function to call when state changes.
-                     Signature: callback(event: str, state: Dict)
-                     Events: 'started', 'stopped', 'completed', 'error'
-        """
-        with self.state_callbacks_lock:
-            if callback not in self.state_callbacks:
-                self.state_callbacks.append(callback)
-                self.logger.debug(f"Registered state callback: {callback.__name__ if hasattr(callback, '__name__') else 'anonymous'}")
-
-    def unregister_state_callback(self, callback: callable):
-        """Remove a registered state callback"""
-        with self.state_callbacks_lock:
-            if callback in self.state_callbacks:
-                self.state_callbacks.remove(callback)
-                self.logger.debug(f"Unregistered state callback")
-
-    def _notify_state_change(self, event: str):
-        """Notify all registered callbacks of state change"""
-        state = self.get_playback_state()
-
-        with self.state_callbacks_lock:
-            callbacks = self.state_callbacks.copy()
-
-        for callback in callbacks:
-            try:
-                callback(event, state)
-            except Exception as e:
-                self.log_error(ErrorCategory.SYSTEM, f"State callback error", e)
 
     # LEGACY-04: _estimate_speech_duration, _process_ssml_markers,
     # _generate_ssml_audio, speak_text, process_session_queue,
@@ -2394,28 +2284,11 @@ class TTSDaemon:
         self.log(f"Received signal {signum}")
 
         # DAEMON-05: propagate to pipeline subprocesses before stopping
-        if self._pipeline_adapter is not None:
-            try:
-                playback = getattr(
-                    self._pipeline_adapter, '_playback_stage', None
-                ) or getattr(
-                    getattr(self._pipeline_adapter, '_orchestrator', None),
-                    'playback', None,
-                )
-                if playback is not None:
-                    for session_id, state in playback.session_states.items():
-                        proc = getattr(state, 'current_proc', None)
-                        if proc is not None and proc.returncode is None:
-                            try:
-                                proc.terminate()
-                                self.log(
-                                    f"SIGTERM cascade → afplay pid={getattr(proc, 'pid', '?')} "
-                                    f"(session {session_id})"
-                                )
-                            except Exception:
-                                pass
-            except Exception as e:
-                self.log(f"SIGTERM cascade error: {e}")
+        try:
+            if self._stop_pipeline_audio():
+                self.log("SIGTERM cascade → terminated in-flight afplay")
+        except Exception as e:
+            self.log(f"SIGTERM cascade error: {e}")
 
         self.stop_signal.set()
     

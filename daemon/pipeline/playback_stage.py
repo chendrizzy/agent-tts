@@ -193,6 +193,13 @@ class PlaybackStage:
                 except asyncio.TimeoutError:
                     continue
 
+                # Voice dictation in progress: hold (not drop) so the mic never
+                # transcribes our own speech; then re-check mute for this segment.
+                while session_control.dictating() and not stop_event.is_set():
+                    await asyncio.sleep(0.25)
+                if stop_event.is_set():
+                    break
+
                 if session_control.is_muted(session_id):
                     continue  # muted after this was queued: drop, don't speak
 
@@ -248,6 +255,24 @@ class PlaybackStage:
                 continue
 
         logger.debug(f"Playback loop ended for session {session_id}")
+
+    def stop_current(self) -> bool:
+        """Terminate the player now speaking, in any session; queued segments stay queued.
+
+        The playback loop sees a non-zero exit as a failed segment and moves on.
+        Returns True if a live player was terminated.
+        """
+        stopped = False
+        for session_id, state in list(self.session_states.items()):
+            proc = getattr(state, 'current_proc', None)
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.terminate()
+                    stopped = True
+                    logger.info(f"terminated afplay pid={getattr(proc, 'pid', '?')} (session {session_id})")
+                except ProcessLookupError:
+                    pass
+        return stopped
 
     async def _playback_watchdog_loop(self, session_id: str):
         """Watchdog: SIGTERM a hung afplay subprocess.

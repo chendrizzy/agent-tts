@@ -194,6 +194,17 @@ def test_mute_unmute(ctl):
     assert sc.muted() == ["c"]
 
 
+def test_dictating_flag_holds_and_expires(ctl):
+    assert not sc.dictating()
+    ctl.mkdir(parents=True, exist_ok=True)
+    flag = ctl / "dictating"
+    flag.write_text("")
+    assert sc.dictating()
+    stale = flag.stat().st_mtime - sc.DICTATION_HOLD_MAX_S - 1
+    os.utime(flag, (stale, stale))  # a crashed helper's flag must not silence TTS forever
+    assert not sc.dictating()
+
+
 def test_safe_sid():
     assert sc.safe_sid("ok-1_X") == "ok-1_X"
     assert sc.safe_sid("../etc/pw d") == "___etc_pw_d"

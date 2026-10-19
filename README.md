@@ -161,6 +161,9 @@ or `$AGENT_TTS_CONTROL_DIR`):
 | `notifications [--set KEY=VALUE]` | The low-disk alert (`popup`, `log`, `off`, and how often) and which Claude Code notifications are spoken |
 | `snapshot` / `identify` | Every session's resolved voice, mute and git identity |
 
+A fresh `dictating` file in the control dir holds playback (lines queue, none are dropped) so a
+dictation tool can keep TTS out of the mic; a flag older than 150 s is ignored.
+
 The **agent-tts manager** is the paid control panel built on these: `/tts-panel`
 in Claude Code (a live pane of every session, grouped by workspace, project,
 worktree and branch, with voices, sharing, logs, search that learns, and all of

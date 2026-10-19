@@ -89,6 +89,17 @@ def muted() -> list:
         return []
 
 
+DICTATION_HOLD_MAX_S = 150  # Claude Code caps a recording at 2 min; a crashed helper's flag expires
+
+
+def dictating() -> bool:
+    """True while a dictation tool records: playback holds, nothing is dropped."""
+    try:
+        return time.time() - (paths.control_dir() / "dictating").stat().st_mtime < DICTATION_HOLD_MAX_S
+    except OSError:
+        return False
+
+
 # --- rules -------------------------------------------------------------------
 @contextmanager
 def locked(name: str):

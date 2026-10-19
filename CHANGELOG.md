@@ -17,8 +17,14 @@ All notable changes to claude-tts are documented here. Format follows
 - **Notification preferences**: the low-disk alert (popup, log or off, and how
   often) and which Claude Code notifications are spoken (`session_control.py
   notifications`).
+- **Dictation hold**: while `<control_dir>/dictating` is under 150 s old, playback waits (queued, not dropped)
+  so voice dictation never transcribes TTS.
 - The control panel built on these (`/tts-panel` and a Cursor canvas) is the
   separate, paid **agent-tts manager**; agent-tts works fully without it.
+
+### Fixed
+- `interrupt` now stops the pipeline's in-flight player (it only checked a legacy flag the pipeline never
+  set); shutdown shares the same path. The dead single-player state was removed.
 
 ### Changed (submission readiness)
 - Removed the unused Ollama auto-installer (`curl | sh`, only reachable from the
