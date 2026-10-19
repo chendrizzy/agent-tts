@@ -64,6 +64,7 @@ verify:
 		tests/test_speech_selection.py \
 		tests/test_session_control.py \
 		tests/test_dictation_hold.py \
+		tests/test_stop_event_cwd.py \
 		tests/test_feedback.py \
 		tests/test_notifications.py
 

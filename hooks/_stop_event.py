@@ -92,6 +92,9 @@ def main():
     for k in ('agent_id', 'agent_type'):
         if isinstance(payload, dict) and payload.get(k):
             payload_out[k] = payload[k]
+    # The session's folder: the daemon files every spoken line under it. A session
+    # that only ever speaks at Stop (any headless run) otherwise never has one.
+    payload_out['cwd'] = (payload.get('cwd') if isinstance(payload, dict) else None) or os.getcwd()
 
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(3.0)
