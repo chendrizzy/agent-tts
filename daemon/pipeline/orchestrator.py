@@ -23,6 +23,7 @@ from .ingest_stage import IngestStage, IngestMessage
 from .process_stage import ProcessStage
 from .generate_stage import GenerateStage
 from .playback_stage import PlaybackStage
+from .. import session_control, spoken_log
 
 if TYPE_CHECKING:  # avoid runtime import cycle (queue_manager imports types only)
     from .queue_manager import QueueManager
@@ -116,6 +117,16 @@ class TTSPipelineOrchestrator:
             'engine': engine,
             'speed': speed,
         }
+
+    async def _message_speed(self, session_id: str) -> float:
+        """Master voice.rate, times the scoped rate rule (clamped) when one applies; off the loop because a
+        cache-miss lookup runs git. Mirrors the scoped volume in PlaybackStage."""
+        scoped, _ = await asyncio.to_thread(
+            session_control.resolve_setting, 'rate', session_id,
+            spoken_log.get_session_cwd(session_id))
+        if scoped is None:  # no rule: the master rate passes through untouched (hand-edited 2.5 is legal)
+            return self.generate.speed
+        return max(0.5, min(2.0, self.generate.speed * scoped))
 
     def set_queue_manager(self, queue_manager: Optional["QueueManager"]) -> None:
         """Late-bind the QueueManager interceptor.
@@ -345,7 +356,8 @@ class TTSPipelineOrchestrator:
                     # 3. Generate audio (parallel workers)
                     message_voice = msg.voice or default_voice
                     msg_audio_ms = 0.0
-                    async for segment in self.generate.generate(processed, message_voice):
+                    speed = await self._message_speed(session_id)
+                    async for segment in self.generate.generate(processed, message_voice, speed):
                         self.metrics.segments_generated += 1
 
                         # 4. Enqueue for playback (per-session buffer)

@@ -14,7 +14,7 @@ from itertools import cycle, islice
 from pathlib import Path
 from typing import Literal, Optional
 
-from daemon.paths import config_path
+from daemon.paths import config_candidates, config_path
 
 GenderPreference = Literal[
     "balanced",
@@ -173,11 +173,119 @@ def render_config(*, engine: str, voice_name: str, backend: str,
     return cfg
 
 
+def _atomic_write(dest: Path, cfg: dict) -> None:
+    """Write cfg to dest via a 0600 tmp file in the same dir + os.replace (never a torn file)."""
+    dest = dest.resolve()  # a symlinked config stays a symlink; its target is what changes
+    tmp = dest.with_name(f"{dest.name}.tmp.{os.getpid()}")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    except PermissionError:  # read-only dir, writable file: not atomic, but better than failing
+        with open(os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(cfg, indent=2) + "\n")
+        return
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(cfg, indent=2) + "\n")
+        os.replace(tmp, dest)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def write_config(cfg: dict, path: Optional[Path] = None) -> Path:
-    """Serialize cfg to `path` (default config_path()) with 0700 dir / 0600 file."""
+    """Serialize cfg to `path` (default config_path()) with a 0600 file; a dir it creates is 0700."""
+    from daemon.session_control import locked  # lazy: session_control imports this module
     dest = Path(path) if path is not None else config_path()
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(dest.parent, 0o700)
-    dest.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-    os.chmod(dest, 0o600)
+    with locked("config.lock"):  # same lock as update_config: no lost update
+        made = not dest.parent.exists()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if made:  # never chmod a pre-existing folder (it may be the user's own, e.g. ~)
+            os.chmod(dest.parent, 0o700)
+        _atomic_write(dest, cfg)
     return dest
+
+
+_SOURCE_TREE = Path(__file__).resolve().parent.parent
+
+
+def effective_config_path() -> Path:
+    """The file the daemon reads (first existing candidate), else config_path() for a new one."""
+    return next((p for p in config_candidates() if p.exists()), config_path())
+
+
+def active_config_path() -> Path:
+    """Where writes go: the effective file, unless it is the in-repo default -> config_path()."""
+    eff = effective_config_path()
+    return config_path() if eff.resolve().is_relative_to(_SOURCE_TREE) else eff
+
+
+# key -> validator returning the stored value; ValueError text goes straight to the panel.
+def _number(key: str, lo: float, hi: float):
+    def check(v):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+            raise ValueError(f"{key}: expected a number {lo}-{hi}, got {v!r}")
+        return float(v)
+    return check
+
+
+def _enabled(v):
+    if not isinstance(v, bool):
+        raise ValueError(f"project_voices.enabled: expected true or false, got {v!r}")
+    return v
+
+
+def _pool(v):
+    if (not isinstance(v, list) or not 1 <= len(v) <= 64
+            or not all(isinstance(x, str) and x.strip() for x in v)):
+        raise ValueError("project_voices.pool: expected 1-64 non-empty strings")
+    return v
+
+
+def update_config(key: str, value) -> dict:
+    """Set one editable key in the config the daemon reads; return the new config.
+
+    Raises ValueError (file untouched) for an unknown key, a bad value, or a file
+    that does not parse -- a broken file is never overwritten.
+    """
+    from daemon.session_control import locked, voices_info  # lazy: session_control imports this module
+    if key == "voice.name":
+        group, field = "voice", "name"
+    elif key in ("voice.rate", "voice.volume", "project_voices.enabled", "project_voices.pool"):
+        group, field = key.split(".")
+    else:
+        raise ValueError(f"unknown key: {key!r}")
+    check = {"voice.rate": _number(key, 0.5, 2.0), "voice.volume": _number(key, 0.0, 2.0),
+             "project_voices.enabled": _enabled, "project_voices.pool": _pool}.get(key)
+    with locked("config.lock"):
+        src, path = effective_config_path(), active_config_path()  # read what the daemon reads
+        cfg: dict = {}
+        if src.exists():
+            try:
+                cfg = json.loads(src.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as e:
+                raise ValueError(f"{src}: {e}") from e
+            if not isinstance(cfg, dict):
+                raise ValueError(f"{src}: not a JSON object")
+        if check:
+            value = check(value)
+        elif not isinstance(value, str) or not value.strip():
+            raise ValueError("voice.name: expected a non-empty voice name")
+        section = cfg.get(group)
+        if section is not None and not isinstance(section, dict):
+            raise ValueError(f"{group}: expected an object in the config, got {section!r}")
+        if key in ("voice.name", "project_voices.pool"):
+            info = voices_info(cfg)
+            engine = info["engine"] or "edge-tts"  # same default as config_state
+            if engine in VOICE_CATALOGS:
+                known = set(info["catalog"]) | {n for g in VOICE_CATALOGS[engine].values() for n in g}
+                bad = [v for v in ([value] if key == "voice.name" else value) if v not in known]
+                if bad:
+                    raise ValueError(f"{key}: unknown voice {bad[0]!r} for this engine")
+        cfg[group] = section = section if section is not None else {}
+        section[field] = value
+        made = not path.parent.exists()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if made:
+            os.chmod(path.parent, 0o700)
+        _atomic_write(path, cfg)
+    return cfg

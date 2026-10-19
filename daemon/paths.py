@@ -57,3 +57,12 @@ def control_dir() -> Path:
     """
     override = os.environ.get("AGENT_TTS_CONTROL_DIR")
     return Path(override) if override else Path.home() / ".claude" / "tts_control"
+
+
+def config_candidates() -> list:
+    """Config files in the order the daemon reads them: the first one that exists wins."""
+    return [
+        config_path(),
+        Path(__file__).resolve().parent.parent / "config" / "tts_user_config.json",
+        Path.home() / ".claude" / "tts" / "config" / "tts_user_config.json",
+    ]

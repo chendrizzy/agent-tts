@@ -124,7 +124,7 @@ async def test_lag_feed_is_per_message_total_audio():
     orch.queue_manager.intercept = AsyncMock(return_value=[msg])
     orch.process.process = AsyncMock()
 
-    async def gen(processed, voice):
+    async def gen(processed, voice, speed=None):
         for _ in range(3):
             yield MagicMock(duration_ms=1000.0)
 

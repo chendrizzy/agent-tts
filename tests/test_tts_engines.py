@@ -22,8 +22,10 @@ def test_ttsengine_declares_synthesize():
 
 
 class _FakeComm:
-    def __init__(self, text, voice):
-        self.text, self.voice = text, voice
+    seen = {}
+
+    def __init__(self, text, voice, rate="+0%"):
+        _FakeComm.seen = {"text": text, "voice": voice, "rate": rate}
 
     async def save(self, path):
         Path(path).write_bytes(b"audio")
@@ -45,7 +47,7 @@ def test_edge_synthesize_writes_file_and_returns_true(tmp_path):
 def test_edge_synthesize_returns_false_on_error(tmp_path):
     class _Boom:
         class Communicate:
-            def __init__(self, *a):
+            def __init__(self, *a, **kw):
                 raise RuntimeError("boom")
 
     e = EdgeTTSEngine()

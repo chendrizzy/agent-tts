@@ -172,6 +172,21 @@ it with `afplay -v`. Linux players differ: `mpv`, `pw-play` and `paplay` scale (
 `ffplay` can only attenuate (capped at 100%), and `aplay` has no volume option, so it
 plays at system volume.
 
+### Voice settings
+
+`config-get` prints the config file the daemon reads (its path, the current voice, rate
+and volume, the project-voice pool, and the voices the engine offers). `config-set --key K --value V`
+edits one of `voice.name`, `voice.rate` (0.5 to 2), `voice.volume` (0 to 2),
+`project_voices.enabled` (`true`/`false`) or `project_voices.pool` (a JSON array of 1 to 64
+names), rewriting the file atomically with owner-only permissions. A bad value or an
+unparseable file is refused and nothing is written. The daemon reads the config at start,
+so run `daemon-restart` to apply; `config-set` reports `restart_needed`.
+
+The speaking rate of a line is `voice.rate` times the scoped `rate` rule
+(`set-rule --scope project --target T --field rate --value 1.3`), clamped to 0.5 to 2, with
+no restart. Kokoro uses it as `speed`, edge-tts as a `+N%` rate, macOS `say` and `espeak` as
+words per minute. Voicebox has no rate control, so it ignores it.
+
 A fresh `dictating` file in the control dir holds playback (lines queue, none are dropped) so a
 dictation tool can keep TTS out of the mic; a flag older than 150 s is ignored.
 

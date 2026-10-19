@@ -29,7 +29,7 @@ def _run(gs, n_chunks, fail_index):
     )
 
     async def fake_generate_chunk(chunk, session_id, request_id, chunk_index,
-                                  total_chunks, voice, semaphore):
+                                  total_chunks, voice, semaphore, speed):
         if chunk_index == fail_index:
             return None                 # transient synth failure -> None segment
         return f"seg{chunk_index}"      # stand-in AudioSegment (truthy)

@@ -83,7 +83,7 @@ def _build_orchestrator(*, queue_manager=None):
     # Mock GenerateStage: .generate yields a single fake segment per call.
     fake_segment = MagicMock(name="AudioSegment")
     orch.generate.generate = MagicMock(
-        side_effect=lambda processed, voice: _async_iter([fake_segment])
+        side_effect=lambda processed, voice, speed=None: _async_iter([fake_segment])
     )
     orch.generate.cleanup_session = AsyncMock()
 

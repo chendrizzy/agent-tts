@@ -25,10 +25,8 @@ class EdgeTTSEngine(TTSEngine):
     async def synthesize(
         self, text: str, out_path: str, voice: str, speed: float = 1.0
     ) -> bool:
-        # edge-tts (Azure) exposes no speed control — `speed` is ignored, matching
-        # the prior inline behavior.
         try:
-            communicate = self._module().Communicate(text, voice)
+            communicate = self._module().Communicate(text, voice, rate=f"{round((speed - 1) * 100):+d}%")
             await communicate.save(out_path)
             return True
         except Exception as exc:  # noqa: BLE001

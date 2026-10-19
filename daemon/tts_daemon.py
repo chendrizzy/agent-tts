@@ -55,7 +55,7 @@ from enum import Enum
 import random
 
 # Production Constants
-from daemon.paths import config_path, socket_path
+from daemon.paths import config_candidates, config_path, socket_path
 SOCKET_PATH = socket_path()
 PID_FILE = Path.home() / ".claude" / "tts_daemon.pid"
 LOG_DIR = Path.home() / ".claude" / "logs" / "tts"
@@ -1907,15 +1907,8 @@ class TTSDaemon:
         Returns an empty dict on any failure — ContentRouter and QueueManager
         both have safe defaults for missing keys.
         """
-        # Project-relative path; daemon may be launched from anywhere so try
-        # both the package dir and the home-directory copy.
-        candidates = [
-            config_path(),
-            Path(__file__).resolve().parent.parent / "config" / "tts_user_config.json",
-            Path.home() / ".claude" / "tts" / "config" / "tts_user_config.json",
-        ]
         self._config_error = None
-        for path in candidates:
+        for path in config_candidates():
             if not path.exists():
                 continue
             # First existing file wins; a broken one must not silently fall through to an older copy.

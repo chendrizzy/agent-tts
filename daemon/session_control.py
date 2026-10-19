@@ -390,9 +390,7 @@ def override_voice(session_id, cwd):
 # --- config / pool -----------------------------------------------------------
 def load_config() -> dict:
     """Active config, same search order as TTSDaemon._load_tts_user_config."""
-    for p in (paths.config_path(),
-              Path(__file__).resolve().parent.parent / "config" / "tts_user_config.json",
-              Path.home() / ".claude" / "tts" / "config" / "tts_user_config.json"):
+    for p in paths.config_candidates():
         if p.exists():  # first existing file wins: falling through would show a stale config as live
             try:
                 cfg = json.loads(p.read_text(encoding="utf-8"))
@@ -416,6 +414,34 @@ def voices_info(cfg: Optional[dict] = None) -> dict:
     return {"engine": engine, "default_voice": default, "rate": voice.get("rate"),
             "volume": voice.get("volume"), "pool": pool, "pool_enabled": enabled,
             "catalog": catalog, **({"config_error": cfg["config_error"]} if "config_error" in cfg else {})}
+
+
+def config_state(restart_needed: bool = False) -> dict:
+    """The editable slice of the active config (daemon defaults where unset) for the panel."""
+    cfg = load_config()
+    info = voices_info(cfg)
+    voice = cfg.get("voice") if isinstance(cfg.get("voice"), dict) else {}
+    pv = cfg.get("project_voices") if isinstance(cfg.get("project_voices"), dict) else {}
+    out = {"path": str(config_io.active_config_path()), "config_error": cfg.get("config_error"),
+           "voice": {"engine": info["engine"] or "edge-tts", "name": info["default_voice"] or "en-US-AvaNeural",
+                     "rate": voice.get("rate", 1.0), "volume": voice.get("volume", 1.0)},
+           "project_voices": {"enabled": info["pool_enabled"], "pool": pv.get("pool") or []},
+           "voices": info["catalog"]}
+    return {**out, "restart_needed": True} if restart_needed else out
+
+
+def _config_value(key: str, raw: str):
+    """The CLI string as the type update_config expects (pool is a JSON array, enabled true/false)."""
+    if key == "voice.name":
+        return raw
+    if key == "project_voices.enabled":
+        if raw not in ("true", "false"):
+            raise ValueError(f"{key}: expected true or false, got {raw!r}")
+        return raw == "true"
+    try:
+        return json.loads(raw)
+    except ValueError:
+        raise ValueError(f"{key}: expected a JSON value, got {raw!r}") from None
 
 
 def _project_label(cwd: str) -> str:
@@ -620,6 +646,12 @@ def main(argv: list) -> int:
                                      _flag(args, "--value"), _flag(args, "--field"))}
         elif cmd == "clear-rule":
             out = {"rules": clear_rule(_flag(args, "--scope"), _flag(args, "--target"), _flag(args, "--field"))}
+        elif cmd == "config-get":
+            out = config_state()
+        elif cmd == "config-set":
+            key = _flag(args, "--key")
+            config_io.update_config(key, _config_value(key, _flag(args, "--value")))
+            out = config_state(restart_needed=True)
         elif cmd == "identify":
             out = {c: identify(c) for c in args}
         elif cmd == "feedback":
@@ -650,7 +682,7 @@ def main(argv: list) -> int:
                 updates[k] = v
             out = {"prefs": set_notification_prefs(updates) if updates else notification_prefs()}
         else:
-            raise ValueError("usage: session_control.py snapshot|pause|resume|daemon-status|daemon-start|daemon-stop|daemon-restart|mute|unmute|set-voice|clear-voice|set-rule|clear-rule|identify|feedback|implicit-pause|tuning|forget|notifications")
+            raise ValueError("usage: session_control.py snapshot|pause|resume|daemon-status|daemon-start|daemon-stop|daemon-restart|mute|unmute|set-voice|clear-voice|set-rule|clear-rule|config-get|config-set|identify|feedback|implicit-pause|tuning|forget|notifications")
     except Exception as exc:  # contract: every failure is {"error": ...} + exit 2
         print(json.dumps({"error": str(exc)}))
         return 2

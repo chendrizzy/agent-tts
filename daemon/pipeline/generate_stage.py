@@ -161,7 +161,8 @@ class GenerateStage:
     async def generate(
         self,
         processed: ProcessedMessage,
-        voice: Optional[str] = None
+        voice: Optional[str] = None,
+        speed: Optional[float] = None,
     ) -> AsyncIterator[AudioSegment]:
         """
         Generate audio for all chunks in parallel.
@@ -171,6 +172,7 @@ class GenerateStage:
         """
         session_id = processed.session_id
         voice = voice or self.default_voice
+        speed = self.speed if speed is None else speed  # per-message (scoped) rate; None = global
 
         # Initialize session resources
         if session_id not in self.audio_queues:
@@ -187,7 +189,7 @@ class GenerateStage:
 
         # Voicebox backend: offload synthesis + playback to the local Voicebox
         # app and yield nothing (PlaybackStage no-ops on empty output — an
-        # established safe contract). Voicebox does its own chunking/crossfade,
+        # established safe contract). Voicebox has no rate parameter: `speed` is a no-op there. Voicebox does its own chunking/crossfade,
         # so we hand it the joined utterance. Fail-safe: on any error speak()
         # returns None and we simply produce no audio (never crashes the pipe).
         if self._voicebox is not None:
@@ -206,7 +208,8 @@ class GenerateStage:
                     chunk_index=i,
                     total_chunks=len(processed.chunks),
                     voice=voice,
-                    semaphore=semaphore
+                    semaphore=semaphore,
+                    speed=speed,
                 )
             )
             tasks.append(task)
@@ -310,7 +313,8 @@ class GenerateStage:
         chunk_index: int,
         total_chunks: int,
         voice: str,
-        semaphore: asyncio.Semaphore
+        semaphore: asyncio.Semaphore,
+        speed: float,
     ) -> Optional[AudioSegment]:
         """Generate audio for a single chunk with concurrency control."""
 
@@ -320,7 +324,7 @@ class GenerateStage:
             try:
                 # Generate unique filename based on content
                 chunk_hash = hashlib.md5(
-                    f"{voice}_{chunk}".encode()
+                    f"{voice}_{speed}_{chunk}".encode()  # speed in the key: a rate change must not replay old audio
                 ).hexdigest()[:12]
                 audio_path = os.path.join(
                     self.cache_dir,
@@ -357,7 +361,7 @@ class GenerateStage:
                     engine = await self._get_kokoro()
                 else:
                     engine = self._get_engine()
-                ok = await engine.synthesize(chunk, audio_path, voice, self.speed)
+                ok = await engine.synthesize(chunk, audio_path, voice, speed)
                 if not ok:
                     logger.error(f"{self.engine} synth failed for chunk {chunk_index}")
                     self._stats['generation_errors'] += 1
