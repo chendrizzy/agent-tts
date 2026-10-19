@@ -335,3 +335,65 @@ def test_route_identify_runs_off_event_loop(tmp_path, monkeypatch):
     router = ContentRouter(config={})
     assert _routed(router, {"session_id": "s", "cwd": str(tmp_path)}, "Something else") is not None
     assert seen and all(t is not threading.main_thread() for t in seen)
+
+
+def _old_reduce(lines):  # the original O(records x votes) semantics, as the oracle
+    recs: list = []
+    for line in lines:
+        try:
+            r = json.loads(line)
+            if r["label"] not in fb.LABELS:
+                continue
+            float(r["ts"]), float(r["weight"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        vote = (r.get("line_id"), r.get("axis"))
+        if r.get("line_id") and r.get("axis"):
+            recs = [x for x in recs if (x.get("line_id"), x.get("axis")) != vote]
+        if r["label"] == "clear":
+            continue
+        if r["label"] == "reset":
+            if r.get("signature") == "*":
+                recs = [x for x in recs if not (x["project"] == r["project"] and (
+                    not r.get("category") or x["category"] == r["category"]))]
+            else:
+                recs = [x for x in recs if not (x["project"] == r["project"] and x["signature"] == r["signature"])]
+        else:
+            recs.append(r)
+    return recs
+
+
+def _rec(label, i, line_id=None, axis=None, project="/p", category="status", sig="s"):
+    r = {"ts": NOW + i, "project": project, "category": category, "signature": sig,
+         "label": label, "weight": 1.0}
+    if line_id:
+        r.update(line_id=line_id, axis=axis)
+    return json.dumps(r)
+
+
+def test_reduce_matches_original_semantics_on_mixed_sequence():
+    lines = [
+        _rec("noise", 0), _rec("useful", 1, "L1", "a"), _rec("noise", 2, "L1", "b"),
+        _rec("useful", 3, "L1", "a"),            # re-vote replaces and moves to the end
+        _rec("clear", 4, "L1", "b"),             # clear deletes the vote
+        _rec("noise", 5, project="/q"), _rec("useful", 6, "L2", "a", project="/q"),
+        _rec("reset", 7, project="/q", sig="*"),  # wipes /q legacy and votes
+        _rec("useful", 8, "L3", "a", sig="t"), _rec("reset", 9, sig="t"),
+        _rec("noise", 10, "L4", "a"), "not json", '{"label": "bogus", "ts": 1, "weight": 1}',
+        _rec("useful", 11, "L4", "a"), _rec("noise", 12),
+    ]
+    assert fb._reduce(lines) == _old_reduce(lines)
+
+
+def test_reduce_scales_linearly_with_vote_records():
+    lines = [_rec("noise", i, f"L{i}", "a") for i in range(20000)]
+    t0 = time.perf_counter()
+    assert len(fb._reduce(lines)) == 20000
+    assert time.perf_counter() - t0 < 1.0
+
+
+def test_reduce_tolerates_a_non_string_vote_key():
+    # A hand-edited line with a list line_id must not take down every tuning lookup.
+    bad = json.dumps({"ts": 1.0, "label": "noise", "weight": 1.0, "line_id": ["a"], "axis": "relevance",
+                      "project": "p", "category": "status", "signature": "s"})
+    assert len(fb._reduce([bad])) == 1

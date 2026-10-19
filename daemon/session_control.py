@@ -7,9 +7,23 @@ command prints ONE JSON document on stdout, errors as ``{"error": msg}`` / exit 
 State lives under ``paths.control_dir()``:
     muted/<safe_sid>   flag file, content ``{"since": <epoch>}``
     paused             global flag file, content ``{"since": <epoch>}``; the daemon drops lines while it exists
+    mood               global file, content = one MOOD name; absent/unknown = normal. Read live per event.
     stay_down          flag file: Kill sets it, Boot/Restart clear it; hooks never auto-start while it exists
     voices.json        ``{"version": 2, "rules": {"<scope>:<key>": {<any of FIELDS>, "set_at"}}}``
                        (version 1 files, voice-only entries, read unchanged)
+
+Mood (ONE global setting, never per scope) maps onto the router's existing knobs. Errors are
+spoken in every mood. ``categories``: which Category values may speak. ``length``: scales the
+summarize threshold (and the speech-selection char budget): below 1 condenses more, above 1
+less. ``tools``: how much tool output is admitted: 0 = extractors + LLM judge (today), 1 = judge
+bypassed (ambiguous digit+keyword output speaks), 2 = any non-empty output that survives the
+noise/duplicate drop checks speaks.
+
+    mood     categories                          length  tools
+    quiet    error, final_answer                 0.5     0
+    normal   error, final_answer, insight, status 1.0    0   (== today, byte for byte)
+    chatty   error, final_answer, insight, status 1.5    1
+    narrate  error, final_answer, insight, status 2.0    2
 
 Rule scopes, narrowest first: session, branch, worktree, project, workspace,
 voice (key = the session's resolved voice name), all. Each field resolves on its
@@ -108,6 +122,33 @@ def is_paused() -> bool:
         return _paused_path().exists()
     except Exception:
         return False
+
+
+MOODS = {"quiet": {"categories": ("error", "final_answer"), "length": 0.5, "tools": 0},
+         "normal": {"categories": ("error", "final_answer", "insight", "status"), "length": 1.0, "tools": 0},
+         "chatty": {"categories": ("error", "final_answer", "insight", "status"), "length": 1.5, "tools": 1},
+         "narrate": {"categories": ("error", "final_answer", "insight", "status"), "length": 2.0, "tools": 2}}
+
+
+def _mood_path() -> Path:
+    return paths.control_dir() / "mood"
+
+
+def mood() -> str:
+    """Current mood; one small read per event, never cached. Unset or unreadable = normal."""
+    try:
+        name = _mood_path().read_text(encoding="utf-8").strip()
+    except Exception:
+        return "normal"
+    return name if name in MOODS else "normal"
+
+
+def set_mood(name: str) -> str:
+    if name not in MOODS:
+        raise ValueError(f"unknown mood: {name!r} (expected one of {', '.join(MOODS)})")
+    paths.control_dir().mkdir(parents=True, exist_ok=True)
+    _mood_path().write_text(name, encoding="utf-8")
+    return name
 
 
 def pause() -> None:
@@ -604,7 +645,7 @@ def _snapshot(stdin_text: str) -> dict:
     with ThreadPoolExecutor(max_workers=8) as ex:
         identities = dict(zip(cwds, ex.map(identify, cwds)))
     info = voices_info()
-    return {"config": info, "muted": muted(), "paused": is_paused(), "rules": load_rules(), "identities": identities,
+    return {"config": info, "muted": muted(), "paused": is_paused(), "mood": mood(), "rules": load_rules(), "identities": identities,
             "resolved": {s["session_id"]: resolve(s["session_id"], s.get("cwd"), info)
                          for s in sessions}}
 
@@ -627,6 +668,8 @@ def main(argv: list) -> int:
         elif cmd in ("pause", "resume"):
             (pause if cmd == "pause" else resume)()
             out = {"paused": is_paused()}
+        elif cmd == "mood":
+            out = {"mood": set_mood(_flag(args, "--set")) if "--set" in args else mood()}
         elif cmd in ("daemon-status", "daemon-start", "daemon-stop", "daemon-restart"):
             from daemon import service_ctl
             try:
@@ -657,10 +700,17 @@ def main(argv: list) -> int:
         elif cmd == "feedback":
             from daemon import feedback
             text, cat = _flag(args, "--text"), _flag(args, "--category")
-            rec = feedback.record(
-                _flag(args, "--label"), _flag(args, "--sid"), _flag(args, "--cwd"), cat, text,
-                float(_opt(args, "--weight", "1.0")), _opt(args, "--source", "panel"))
+            if "--line" in args:  # per-line rating; without it the legacy stacked --label record
+                rec = feedback.vote(_flag(args, "--line"), _flag(args, "--axis"), _flag(args, "--value"),
+                                    _flag(args, "--sid"), _flag(args, "--cwd"), cat, text)
+            else:
+                rec = feedback.record(
+                    _flag(args, "--label"), _flag(args, "--sid"), _flag(args, "--cwd"), cat, text,
+                    float(_opt(args, "--weight", "1.0")), _opt(args, "--source", "panel"))
             out = {"recorded": rec, "effect": feedback.adjust(rec["project"], cat, text)}
+        elif cmd == "votes":
+            from daemon import feedback
+            out = {"votes": feedback.votes([i for i in _flag(args, "--lines").split(",") if i])}
         elif cmd == "implicit-pause":
             from daemon import feedback
             out = {"recorded": feedback.implicit_pause(_flag(args, "--sid"), _flag(args, "--cwd"))}
@@ -682,7 +732,7 @@ def main(argv: list) -> int:
                 updates[k] = v
             out = {"prefs": set_notification_prefs(updates) if updates else notification_prefs()}
         else:
-            raise ValueError("usage: session_control.py snapshot|pause|resume|daemon-status|daemon-start|daemon-stop|daemon-restart|mute|unmute|set-voice|clear-voice|set-rule|clear-rule|config-get|config-set|identify|feedback|implicit-pause|tuning|forget|notifications")
+            raise ValueError("usage: session_control.py snapshot|pause|resume|daemon-status|daemon-start|daemon-stop|daemon-restart|mute|unmute|set-voice|clear-voice|set-rule|clear-rule|config-get|config-set|identify|mood|feedback|votes|implicit-pause|tuning|forget|notifications")
     except Exception as exc:  # contract: every failure is {"error": ...} + exit 2
         print(json.dumps({"error": str(exc)}))
         return 2

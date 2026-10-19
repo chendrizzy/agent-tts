@@ -9,6 +9,9 @@ State: ``paths.control_dir()/feedback.jsonl``, append-only, one record per line:
     {"ts", "sid", "project", "category", "signature",
      "label": useful|noise|urgent|verbose|reset, "weight", "source", "text"}
 Implicit records also carry ``uts`` (the utterance's timestamp) so a line is voted on once.
+Per-line ratings add ``line_id`` ("<sid>:<ts>": the session id plus the spoken-log entry's ``ts``
+exactly as written in the JSON), ``axis`` (relevance|length|priority) and ``value``. One vote per
+(line_id, axis): the latest wins, ``clear`` removes it. Values map onto labels via ``AXES``.
 A ``reset`` record zeroes every earlier record with the same (project, signature);
 signature "*" zeroes the (project, category) instead (empty category: the project).
 """
@@ -20,7 +23,11 @@ from typing import Optional
 
 from daemon import paths, session_control, spoken_log
 
-LABELS = ("useful", "noise", "urgent", "verbose", "reset")
+LABELS = ("useful", "noise", "urgent", "verbose", "demote", "concise", "reset", "clear")
+# axis -> value -> label. demote: priority down, never mutes. concise: only undoes condensing.
+AXES = {"relevance": {"relevant": "useful", "noise": "noise"},
+        "length": {"long": "verbose", "short": "concise"},
+        "priority": {"higher": "urgent", "lower": "demote"}}
 HALF_LIFE_S = 14 * 86400.0       # old opinions fade: preferences drift
 IMPLICIT_WINDOW_S = 90.0         # a pause this soon after speech weakly implies "not wanted"
 IMPLICIT_WEIGHT = 0.3            # implicit evidence is weaker than an explicit click
@@ -86,9 +93,12 @@ def _append(rec: dict, compact: bool = False) -> None:
 
 
 def _reduce(lines) -> list:
-    """Valid records after reset processing, in file order."""
-    recs: list = []
-    for line in lines:
+    """Valid records after reset processing, in file order.
+
+    Votes live in a dict keyed (line_id, axis) so a re-vote replaces in O(1)
+    (pop + reinsert keeps file order); legacy records get a unique int key."""
+    recs: dict = {}
+    for n, line in enumerate(lines):
         try:
             r = json.loads(line)
             if r["label"] not in LABELS:
@@ -96,16 +106,24 @@ def _reduce(lines) -> list:
             float(r["ts"]), float(r["weight"])
         except (ValueError, KeyError, TypeError):
             continue
+        lid, axis = r.get("line_id"), r.get("axis")
+        if isinstance(lid, str) and isinstance(axis, str) and lid and axis:  # a re-vote replaces that line+axis
+            key = (lid, axis)
+            recs.pop(key, None)
+        else:
+            key = n
+        if r["label"] == "clear":
+            continue
         if r["label"] == "reset":
             if r.get("signature") == "*":
-                recs = [x for x in recs if not (x["project"] == r["project"] and (
-                    not r.get("category") or x["category"] == r["category"]))]
+                recs = {k: x for k, x in recs.items() if not (x["project"] == r["project"] and (
+                    not r.get("category") or x["category"] == r["category"]))}
             else:
-                recs = [x for x in recs
-                        if not (x["project"] == r["project"] and x["signature"] == r["signature"])]
+                recs = {k: x for k, x in recs.items()
+                        if not (x["project"] == r["project"] and x["signature"] == r["signature"])}
         else:
-            recs.append(r)
-    return recs
+            recs[key] = r
+    return list(recs.values())
 
 
 def _compact(p) -> None:
@@ -123,7 +141,8 @@ def _project(cwd) -> str:
 
 
 def record(label: str, sid: str, cwd, category: str, text: str,
-           weight: float = 1.0, source: str = "panel", uts: Optional[float] = None) -> dict:
+           weight: float = 1.0, source: str = "panel", uts: Optional[float] = None,
+           line_id: str = "", axis: str = "", value: str = "") -> dict:
     if label not in LABELS:
         raise ValueError(f"unknown label: {label!r} (expected one of {', '.join(LABELS)})")
     if source not in ("panel", "implicit"):
@@ -134,8 +153,33 @@ def record(label: str, sid: str, cwd, category: str, text: str,
            "source": source, "text": text[:300]}
     if uts is not None:
         rec["uts"] = uts
+    if line_id:
+        rec.update(line_id=line_id, axis=axis, value=value)
     _append(rec)
     return rec
+
+
+def vote(line_id: str, axis: str, value: str, sid: str, cwd, category: str, text: str) -> dict:
+    """Rate one spoken line on one axis; replaces that line+axis's earlier vote, ``clear`` removes it."""
+    if not line_id:
+        raise ValueError("missing line id")
+    if axis not in AXES:
+        raise ValueError(f"unknown axis: {axis!r} (expected one of {', '.join(AXES)})")
+    if value != "clear" and value not in AXES[axis]:
+        raise ValueError(f"unknown value for {axis}: {value!r} (expected one of {', '.join(AXES[axis])}, clear)")
+    return record("clear" if value == "clear" else AXES[axis][value], sid, cwd, category, text,
+                  line_id=line_id, axis=axis, value=value)
+
+
+def votes(line_ids) -> dict:
+    """{line_id: {axis: value}} for the given lines; axes with no vote are omitted."""
+    wanted = set(line_ids)
+    out: dict = {}
+    if wanted and has_data():
+        for r in _load()["all"]:
+            if r.get("line_id") in wanted and r.get("axis") in AXES:
+                out.setdefault(r["line_id"], {})[r["axis"]] = r.get("value")
+    return out
 
 
 def forget(project: str, signature_: str, category: str = "") -> dict:
@@ -202,7 +246,7 @@ def _load() -> dict:
 
 # --- scoring -----------------------------------------------------------------
 def _tally(recs: list, now: float, scale: float = 1.0) -> dict:
-    t = {"useful": 0.0, "noise": 0.0, "urgent": 0.0, "verbose": 0.0, "noise_explicit": 0.0}
+    t = {"useful": 0.0, "noise": 0.0, "urgent": 0.0, "verbose": 0.0, "demote": 0.0, "concise": 0.0, "noise_explicit": 0.0}
     for r in recs:
         w = scale * float(r["weight"]) * 0.5 ** (max(0.0, now - float(r["ts"])) / HALF_LIFE_S)
         t[r["label"]] += w
@@ -221,12 +265,13 @@ def _suppressed(t: dict, category: str) -> bool:
 
 
 def _category_delta(t: dict) -> int:
-    d = round(CATEGORY_DELTA_SCALE * t["score"] / (t["n"] + 2))
+    d = round(CATEGORY_DELTA_SCALE * (t["score"] - t["demote"]) / (t["n"] + t["demote"] + 2))
     return max(-CATEGORY_DELTA_MAX, min(CATEGORY_DELTA_MAX, d))
 
 
-def _factor(verbose: float) -> float:
-    return max(VERBOSE_FLOOR, VERBOSE_BASE ** verbose)
+def _factor(verbose: float, concise: float = 0.0) -> float:
+    # concise only cancels verbose votes: net below zero stays 1.0, it never adds content
+    return max(VERBOSE_FLOOR, VERBOSE_BASE ** max(0.0, verbose - concise))
 
 
 def _neutral(sig: str) -> dict:
@@ -251,8 +296,10 @@ def adjust(project: str, category: str, content: str, now: Optional[float] = Non
         delta = _category_delta(cat)
         if sig and tmpl["urgent"] >= URGENT_MIN:
             delta += TEMPLATE_URGENT_BOOST
+        if sig and tmpl["demote"] >= URGENT_MIN:
+            delta -= TEMPLATE_URGENT_BOOST
         out["priority_delta"] = max(-DELTA_MAX, min(DELTA_MAX, delta))
-        out["summarize_factor"] = _factor(cat["verbose"] + tmpl["verbose"])
+        out["summarize_factor"] = _factor(cat["verbose"] + tmpl["verbose"], cat["concise"] + tmpl["concise"])
         return out
     except Exception:
         return _neutral(sig)
@@ -273,6 +320,7 @@ def tuning(now: Optional[float] = None) -> dict:
         templates.append({"project": project, "signature": sig, "score": round(t["score"], 3),
                           "useful": round(t["useful"], 3), "noise": round(t["noise"], 3),
                           "urgent": round(t["urgent"], 3), "verbose": round(t["verbose"], 3),
+                          "demote": round(t["demote"], 3), "concise": round(t["concise"], 3),
                           "state": state, "example": last["text"]})
     templates.sort(key=lambda x: -abs(x["score"]))
     categories = []
@@ -280,5 +328,5 @@ def tuning(now: Optional[float] = None) -> dict:
         t = _tally(recs, now)
         categories.append({"project": project, "category": category,
                            "priority_delta": _category_delta(t),
-                           "summarize_factor": _factor(t["verbose"]), "n": round(t["n"], 3)})
+                           "summarize_factor": _factor(t["verbose"], t["concise"]), "n": round(t["n"], 3)})
     return {"templates": templates[:TUNING_MAX_TEMPLATES], "categories": categories}

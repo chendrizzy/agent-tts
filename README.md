@@ -160,8 +160,22 @@ or `$AGENT_TTS_CONTROL_DIR`):
 | `pause` / `resume` | Global pause: the daemon drops every line (queued and new) and cuts what is playing, until `resume` |
 | `daemon-status` / `daemon-start` / `daemon-stop` / `daemon-restart` | Control the background service (launchd, `systemd --user`, or a plain process). `daemon-stop` writes a `stay_down` flag that the session-start hook respects, so it stays down until `daemon-start` |
 | `feedback --label useful\|noise\|urgent\|verbose ...` | Rate a spoken line: the router learns per project, category and kind of line what to drop, raise or condense (fades over two weeks); `tuning` shows it, `forget` undoes it |
+| `feedback --line ID --axis relevance\|length\|priority --value V ...` | Rate one spoken line on one axis (`relevant`/`noise`, `long`/`short`, `higher`/`lower`, or `clear`); a new vote replaces the earlier one for that line and axis. `ID` is `<session id>:<ts>` of the spoken-log entry, `ts` exactly as written in the log. `lower` only lowers priority and never mutes; `short` only undoes condensing |
+| `votes --lines ID1,ID2` | Current votes: `{"votes": {"<id>": {"relevance": ..., "length": ..., "priority": ...}}}` (unvoted axes omitted) |
+| `mood [--set quiet\|normal\|chatty\|narrate]` | One global setting, read live per event (see Mood below); `normal` is the default |
 | `notifications [--set KEY=VALUE]` | The low-disk alert (`popup`, `log`, `off`, and how often) and which Claude Code notifications are spoken |
 | `snapshot` / `identify` | Every session's resolved voice, mute and git identity |
+
+### Mood
+
+One global setting. Errors are spoken in every mood.
+
+| Mood | Spoken categories | Condensing (summarize threshold and speech-selection budget) | Tool output admitted |
+|------|-------------------|------|------|
+| `quiet` | error, final answer (questions and permission prompts arrive as final answers) | x0.5 (condensed shorter) | as `normal` |
+| `normal` | error, final answer, insight, status | x1.0 (today's behaviour) | extractors plus the LLM judge |
+| `chatty` | same as `normal` | x1.5 (condensed less) | the judge is bypassed: ambiguous routine output speaks |
+| `narrate` | same as `normal` | x2.0 (condensed least) | any non-empty output that survives the noise and duplicate checks |
 
 ### Volume
 

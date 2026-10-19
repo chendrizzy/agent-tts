@@ -271,7 +271,7 @@ def test_cli_snapshot_set_clear_mute(repo):
     sessions = {"sessions": [{"session_id": "s1", "cwd": cwd}, {"session_id": "s2", "cwd": cwd},
                              {"session_id": "s3", "cwd": None}]}
     rc, out = _cli("snapshot", stdin=json.dumps(sessions))
-    assert rc == 0 and set(out) == {"config", "muted", "paused", "rules", "identities", "resolved"}
+    assert rc == 0 and set(out) == {"config", "muted", "paused", "mood", "rules", "identities", "resolved"}
     assert out["identities"][cwd]["branch"] == "main" and list(out["identities"]) == [cwd]
     assert out["resolved"]["s1"]["source"] == "project_pool" and set(out["resolved"]) == {"s1", "s2", "s3"}
 

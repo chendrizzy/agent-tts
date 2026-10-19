@@ -741,6 +741,11 @@ class ContentRouter:
             self._last_drop_reason = decision.raw_excerpt or "classifier: should_speak=False"
             return None
 
+        decision = self._apply_mood(decision, event)
+        if decision is None:
+            self._release_notes(noted)  # never spoken: a later identical item may speak
+            return None
+
         decision = await self._apply_feedback(decision, event)
         if decision is None:
             return None
@@ -1041,12 +1046,12 @@ class ContentRouter:
         # OR was too loose: `lsof | head` (digits, no domain keyword) and
         # tool outputs with only path/numbers were triggering the LLM judge
         # and sometimes escaping as STATUS. Both signals must be present.
-        if (
-            stdout
-            and len(stdout) >= self.bash_ambiguous_min
+        depth = self._mood_cfg()["tools"]  # chatty skips the judge; narrate also skips the shape gate
+        if stdout and (depth >= 2 or (
+            len(stdout) >= self.bash_ambiguous_min
             and re.search(r"\d", stdout)
             and DOMAIN_KEYWORDS_RE.search(stdout)
-        ):
+        )):
             # Enrich the judge with compact session/project context built from
             # signals ALREADY on the event (command target, project dir, plus a
             # session-local recency flag). This only widens the judge's view —
@@ -1055,7 +1060,7 @@ class ContentRouter:
             session_id = event.get("session_id") or "default"
             recently_spoken = self._was_recently_spoken(stdout, session_id)
             judge_context = self._judge_context(event, recently_spoken)
-            verdict = await self._binary_llm_judge(
+            verdict = depth >= 1 or await self._binary_llm_judge(
                 stdout, tool_name, judge_context=judge_context
             )
             if verdict:
@@ -2081,7 +2086,7 @@ class ContentRouter:
         if not substantive:
             return cta_text or rule_based_summary(content)
 
-        budget = self._sel_max_chars
+        budget = int(self._sel_max_chars * self._mood_cfg()["length"])
         selected: dict[int, str] = {}
         first = True
         for b in sorted(substantive, key=lambda x: x["score"], reverse=True):
@@ -2115,6 +2120,27 @@ class ContentRouter:
         if adj["suppress"]:
             self._last_drop_reason = f"feedback: template '{adj['signature']}' rated noise"
         return adj["suppress"]
+
+    @staticmethod
+    def _mood_cfg() -> dict:
+        from daemon import session_control
+        return session_control.MOODS[session_control.mood()]
+
+    def _apply_mood(self, decision: RouterDecision, event: dict) -> Optional[RouterDecision]:
+        """Global mood (session_control.MOODS): category gate + condensing scale; None = dropped.
+        ERROR is exempt from both. normal is a no-op. A turn-ending (stop_event) item is always
+        gated as final_answer: INSIGHT/STATUS are tool-event categories, and an insight phrase
+        inside a final answer must not silence it."""
+        if decision.category == Category.ERROR:
+            return decision
+        m = self._mood_cfg()
+        gate = "final_answer" if event.get("command") == "stop_event" else decision.category.value
+        if gate not in m["categories"]:
+            self._last_drop_reason = f"mood: {gate} not spoken"
+            return None
+        if m["length"] != 1.0:
+            decision = replace(decision, needs_summarization=len(decision.content) >= self.summarize_threshold * m["length"])
+        return decision
 
     async def _apply_feedback(self, decision: RouterDecision, event: dict) -> Optional[RouterDecision]:
         """Panel-rating-driven tuning (daemon/feedback.py); None = suppressed."""
