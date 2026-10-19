@@ -704,6 +704,10 @@ class ContentRouter:
             self._last_drop_reason = decision.raw_excerpt or "classifier: should_speak=False"
             return None
 
+        decision = await self._apply_feedback(decision, event)
+        if decision is None:
+            return None
+
         pressure = self._pressure_for(event)
 
         # 1. Priority gate — silence borderline content under high pressure.
@@ -753,6 +757,10 @@ class ContentRouter:
                 )
             else:
                 decision = await self._maybe_summarize(decision)
+
+        # The panel rates what was SPOKEN (prefixed / summarized); re-check the final text.
+        if await self._feedback_suppresses(decision, event):
+            return None
 
         session_id = event.get("session_id") or "default"
         return RoutedItem(decision=decision, session_id=session_id)
@@ -2034,7 +2042,47 @@ class ContentRouter:
         result = " ".join(p for p in ordered if p).strip()
         return result or rule_based_summary(content)
 
+    async def _feedback_project(self, event: dict) -> str:
+        """Project key for feedback; git runs off the event loop."""
+        from daemon import session_control, spoken_log
+        cwd = event.get("cwd") or spoken_log.get_session_cwd(event.get("session_id") or "")
+        return (await asyncio.to_thread(session_control.identify, cwd))["project"] if cwd else ""
+
+    async def _feedback_suppresses(self, decision: RouterDecision, event: dict) -> bool:
+        from daemon import feedback
+        if not feedback.has_data():
+            return False
+        adj = feedback.adjust(await self._feedback_project(event), decision.category.value, decision.content)
+        if adj["suppress"]:
+            self._last_drop_reason = f"feedback: template '{adj['signature']}' rated noise"
+        return adj["suppress"]
+
+    async def _apply_feedback(self, decision: RouterDecision, event: dict) -> Optional[RouterDecision]:
+        """Panel-rating-driven tuning (daemon/feedback.py); None = suppressed."""
+        from daemon import feedback
+        if not feedback.has_data():
+            return decision
+        project = await self._feedback_project(event)
+        adj = feedback.adjust(project, decision.category.value, decision.content)
+        if adj["suppress"]:
+            self._last_drop_reason = f"feedback: template '{adj['signature']}' rated noise"
+            return None
+        if adj["priority_delta"]:
+            decision = replace(decision, priority=max(1, min(10, decision.priority + adj["priority_delta"])))
+        factor = adj["summarize_factor"]
+        if factor < 1.0 and len(decision.content) >= self.summarize_threshold * factor:
+            decision = replace(decision, needs_summarization=True)
+        return decision
+
     def _apply_project_voice(self, decision: RouterDecision, event: dict) -> RouterDecision:
+        # Per-session control rules (panel-set) beat the hashed project pool.
+        from daemon import session_control, spoken_log
+        sid = event.get("session_id") or ""
+        hit = session_control.override_voice(
+            sid, event.get("cwd") or spoken_log.get_session_cwd(sid)
+        )
+        if hit:
+            return replace(decision, voice=hit[0])
         voice = self._resolve_project_voice(self._project_for_event(event))
         return replace(decision, voice=voice) if voice else decision
 

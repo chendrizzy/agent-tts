@@ -157,3 +157,11 @@ def test_filename_extension_idempotent() -> None:
     once = _tu.speak_file_extensions("see config.toml now")
     assert "config dot toml" in once
     assert once == _tu.speak_file_extensions(once)
+
+
+def test_a_line_of_contractions_is_speakable() -> None:
+    # The dictionary holds no contractions; without stripping the clitic first a
+    # line made only of them read as gibberish and was silently not spoken.
+    assert _tu.is_speakable("I'm you're we've they'll") is True
+    assert _tu.is_speakable("can't won't shan't") is True
+    assert _tu.is_speakable("ls drwxr xr") is False

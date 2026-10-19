@@ -9,6 +9,7 @@ Precedence (highest first):
     config_dir  : $XDG_CONFIG_HOME/claude-tts  ->  ~/.config/claude-tts
     config_path : $CLAUDE_TTS_CONFIG           ->  config_dir()/config.json
     socket_path : $CLAUDE_TTS_SOCKET           ->  ${XDG_RUNTIME_DIR:-/tmp}/claude-tts.sock
+    control_dir : $AGENT_TTS_CONTROL_DIR         ->  ~/.claude/tts_control
 """
 import os
 from pathlib import Path
@@ -46,3 +47,13 @@ def socket_path() -> str:
         return override
     runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
     return f"{runtime}/claude-tts.sock"
+
+
+def control_dir() -> Path:
+    """Per-session control state (mute flags, voice override rules).
+
+    Honors $AGENT_TTS_CONTROL_DIR; otherwise ~/.claude/tts_control. The POSIX-sh
+    hooks mirror this with ``${AGENT_TTS_CONTROL_DIR:-$HOME/.claude/tts_control}``.
+    """
+    override = os.environ.get("AGENT_TTS_CONTROL_DIR")
+    return Path(override) if override else Path.home() / ".claude" / "tts_control"

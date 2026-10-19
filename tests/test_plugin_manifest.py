@@ -178,7 +178,7 @@ def test_pyproject_version_reads_project_version():
 
 def test_manifests_version_matches_pyproject():
     version = _bm.pyproject_version((_ROOT4D / "pyproject.toml").read_text())
-    for rel in (".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"):
+    for rel in _bm._MANIFESTS:
         text = (_ROOT4D / rel).read_text()
         found = _re.findall(r'"version"\s*:\s*"([^"]*)"', text)
         assert found, f"{rel}: no version field found"

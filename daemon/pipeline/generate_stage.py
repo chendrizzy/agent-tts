@@ -271,31 +271,35 @@ class GenerateStage:
         write (so it fires even at ~0 bytes free); the spoken-log warning is
         best-effort for the statusline (works because the guard fires while
         headroom remains)."""
+        from .. import session_control
+        prefs = session_control.notification_prefs()
         now = time.time()
-        if now - self._last_disk_warn < 60:        # at most one alert per minute
+        if now - self._last_disk_warn < prefs["disk_alert_every_s"]:
             return
         self._last_disk_warn = now
         mb = max(0, free_bytes // (1024 * 1024))
         msg = f"agent-tts muted: only {mb} MB free — free disk space to restore speech"
-        try:
-            import sys
-            import subprocess
-            if sys.platform == "darwin":
-                subprocess.Popen(
-                    ["osascript", "-e",
-                     f'display notification "{msg}" with title "agent-tts"'],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            elif shutil.which("notify-send"):
-                subprocess.Popen(["notify-send", "agent-tts", msg],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
-        try:
-            from .. import spoken_log
-            spoken_log.append("TTS muted - disk full", session_id=session_id,
-                              category="disk_full")
-        except Exception:
-            pass
+        if prefs["disk_alert"] == "popup":
+            try:
+                import sys
+                import subprocess
+                if sys.platform == "darwin":
+                    subprocess.Popen(
+                        ["osascript", "-e",
+                         f'display notification "{msg}" with title "agent-tts"'],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                elif shutil.which("notify-send"):
+                    subprocess.Popen(["notify-send", "agent-tts", msg],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+        if prefs["disk_alert"] != "off":
+            try:
+                from .. import spoken_log
+                spoken_log.append("TTS muted - disk full", session_id=session_id,
+                                  category="disk_full")
+            except Exception:
+                pass
         logger.error("DISK GUARD: %s", msg)
 
     async def _generate_chunk(

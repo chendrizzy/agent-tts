@@ -6,6 +6,26 @@ All notable changes to claude-tts are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+- **`daemon/session_control.py`**, the free per-session control CLI: mute flags and scoped voice rules under
+  `~/.claude/tts_control/` (`$AGENT_TTS_CONTROL_DIR`), git identity, and a JSON
+  CLI. The hooks skip muted sessions; the daemon drops their events and queued
+  lines; a voice rule beats the project pool and its concurrency gate.
+- **`daemon/feedback.py`**: ratings of spoken lines (useful, noise, urgent, too
+  long) and pauses tune what the router speaks, its priority, and how condensed,
+  per project, category and line template, decaying over two weeks.
+- **Notification preferences**: the low-disk alert (popup, log or off, and how
+  often) and which Claude Code notifications are spoken (`session_control.py
+  notifications`).
+- The control panel built on these (`/tts-panel` and a Cursor canvas) is the
+  separate, paid **agent-tts manager**; agent-tts works fully without it.
+
+### Fixed
+- A line made only of contractions ("I'm you're we've they'll") was judged
+  gibberish and silently not spoken.
+- Session identity spells paths as the disk does, so one project reached by two
+  spellings on a case-insensitive volume is one project for voice rules.
+
 ## [0.1.12] — 2026-10-11
 
 ### Fixed

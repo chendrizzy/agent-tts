@@ -20,6 +20,12 @@ if [ -z "$PYTHON_BIN" ] || [ ! -x "$PYTHON_BIN" ]; then
     exit 0
 fi
 
+# Per-session mute (panel); sid precedence matches cursor_normalize.py (session_id first); name matches daemon.session_control.safe_sid.
+SID=$(jq -r '[.session_id, .conversation_id] | map(select(. != null and . != "")) | (.[0] // "default")' <<< "$INPUT" 2>/dev/null)
+if [ -e "${AGENT_TTS_CONTROL_DIR:-$HOME/.claude/tts_control}/muted/$(printf '%s' "${SID:-default}" | LC_ALL=C tr -c 'A-Za-z0-9_-' '_' | cut -c1-128)" ]; then
+    exit 0
+fi
+
 NORMALIZED=$("$PYTHON_BIN" "$PLUGIN_ROOT/hooks/cursor_normalize.py" pre <<< "$INPUT" 2>/dev/null) || exit 0
 [ -n "$NORMALIZED" ] || exit 0
 

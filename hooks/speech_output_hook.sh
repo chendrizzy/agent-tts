@@ -30,6 +30,32 @@ LOG_DIR="$HOME/.claude/logs/hooks"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/speech_output_$(date +%Y%m%d).log"
 log() { echo "[$(date +'%H:%M:%S')] Speech-Output: $1" >> "$LOG_FILE"; }
+
+# Per-session mute (panel); name matches daemon.session_control.safe_sid. Raw-text
+# (Notification) input has no JSON session id -> env/default, like the python below.
+SID=$(jq -r '.session_id // empty' <<< "$OUTPUT" 2>/dev/null)
+SID="${SID:-${CLAUDE_SESSION_ID:-default}}"
+if [ -e "${AGENT_TTS_CONTROL_DIR:-$HOME/.claude/tts_control}/muted/$(printf '%s' "${SID:-default}" | LC_ALL=C tr -c 'A-Za-z0-9_-' '_' | cut -c1-128)" ]; then
+    log "stop_event skipped: session muted"
+    exit 0
+fi
+
+# Notification prefs (notifications.json). Kind rule mirrors
+# daemon.session_control.notification_kind; tests/test_notifications.py pins the parity.
+NOTIF_KIND=""
+if [ "$(jq -r '.hook_event_name // empty' <<< "$OUTPUT" 2>/dev/null)" = "Notification" ]; then
+    NOTIF_KIND=$(jq -r '(.notification_type // "") as $t | ((.message | strings | ascii_downcase) // "") as $m
+        | if $t == "permission_prompt" or $t == "idle_prompt" then $t
+          elif ($m | contains("permission")) then "permission_prompt"
+          elif ($m | contains("waiting for your input") or contains("waiting for input")) then "idle_prompt"
+          else "other" end' <<< "$OUTPUT" 2>/dev/null)
+    NOTIF_KIND="${NOTIF_KIND:-other}"
+    if [ "$(jq -r --arg k "$NOTIF_KIND" 'if .speak[$k] == false then "off" else "on" end' \
+            "${AGENT_TTS_CONTROL_DIR:-$HOME/.claude/tts_control}/notifications.json" 2>/dev/null)" = "off" ]; then
+        log "notification skipped: $NOTIF_KIND off"
+        exit 0
+    fi
+fi
 PYTHON_BIN="${CLAUDE_TTS_PYTHON:-/Library/Frameworks/Python.framework/Versions/3.13/bin/python3}"
 if [ ! -x "$PYTHON_BIN" ]; then
     PYTHON_BIN="$(command -v python3 2>/dev/null || true)"
@@ -54,7 +80,7 @@ fi
 # then forwards as `stop_event`. If input is raw text (Notification path),
 # treat it as content directly.
 (
-    printf '%s' "$OUTPUT" | "$PYTHON_BIN" -c "
+    printf '%s' "$OUTPUT" | NOTIF_KIND="$NOTIF_KIND" "$PYTHON_BIN" -c "
 import os as _os, signal as _signal
 # Wall-clock ceiling, self-enforced. GNU coreutils 'timeout' is absent on stock
 # macOS, where wrapping this invocation in it meant the hook delivered nothing
@@ -133,6 +159,8 @@ payload_out = {
 # Subagent markers (Claude Code stamps these inside Agent/Workflow subagents;
 # Stop becomes SubagentStop there). Forward them so the daemon's
 # 'subagent context: silent by policy' gate applies to stop events too.
+if os.environ.get('NOTIF_KIND'):
+    payload_out['notification_kind'] = os.environ['NOTIF_KIND']
 for k in ('agent_id', 'agent_type'):
     if isinstance(payload, dict) and payload.get(k):
         payload_out[k] = payload[k]

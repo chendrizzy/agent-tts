@@ -146,6 +146,26 @@ engine additionally needs an `mlx-audio` interpreter pointed to by `$MLX_PYTHON`
 | `/tts:config` | View or change any setting by key, with validation, then restart to apply |
 | `/tts:uninstall` | Stop and remove the service/daemon (optionally the config) |
 
+## Session control (free) and the agent-tts manager (paid)
+
+Everything the daemon can do per session is free and scriptable through
+`daemon/session_control.py` (JSON in and out; state in `~/.claude/tts_control/`,
+or `$AGENT_TTS_CONTROL_DIR`):
+
+| Command | What it does |
+|---------|--------------|
+| `mute SID...` / `unmute SID...` | Pause or resume one session; the hooks stop sending its events and the daemon drops what it had queued |
+| `set-voice --scope S --key K --voice V` / `clear-voice` | Voice rules at `session`, `branch`, `worktree`, `project` (all of a repo's worktrees), `workspace` (the folder holding projects) or `all`; the narrowest wins, no restart |
+| `feedback --label useful\|noise\|urgent\|verbose ...` | Rate a spoken line: the router learns per project, category and kind of line what to drop, raise or condense (fades over two weeks); `tuning` shows it, `forget` undoes it |
+| `notifications [--set KEY=VALUE]` | The low-disk alert (`popup`, `log`, `off`, and how often) and which Claude Code notifications are spoken |
+| `snapshot` / `identify` | Every session's resolved voice, mute and git identity |
+
+The **agent-tts manager** is the paid control panel built on these: `/tts-panel`
+in Claude Code (a live pane of every session, grouped by workspace, project,
+worktree and branch, with voices, sharing, logs, search that learns, and all of
+the above as buttons) and the same view as a Cursor canvas. agent-tts works fully
+without it. It is sold on Agensi.
+
 ## Requirements
 
 - **Python ≥ 3.11** and [`uv`](https://docs.astral.sh/uv/).

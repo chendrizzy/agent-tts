@@ -26,6 +26,13 @@ mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/cursor_after_agent_$(date +%Y%m%d).log"
 log() { echo "[$(date +'%H:%M:%S')] Cursor-AfterAgent: $1" >> "$LOG_FILE"; }
 
+# Per-session mute (panel); sid precedence matches cursor_normalize.py (session_id first); name matches daemon.session_control.safe_sid.
+SID=$(jq -r '[.session_id, .conversation_id] | map(select(. != null and . != "")) | (.[0] // "default")' <<< "$INPUT" 2>/dev/null)
+if [ -e "${AGENT_TTS_CONTROL_DIR:-$HOME/.claude/tts_control}/muted/$(printf '%s' "${SID:-default}" | LC_ALL=C tr -c 'A-Za-z0-9_-' '_' | cut -c1-128)" ]; then
+    log "stop_event skipped: session muted"
+    exit 0
+fi
+
 if [ ! -S "$SOCKET" ] || ! /usr/bin/pgrep -f "python.*tts_daemon.py" > /dev/null 2>&1; then
     source "$PLUGIN_ROOT/hooks/ensure-daemon-ready.sh" 2>>"$LOG_FILE" || true
     if [ ! -S "$SOCKET" ]; then

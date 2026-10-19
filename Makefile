@@ -60,7 +60,10 @@ verify:
 		tests/test_systemd_render.py \
 		tests/test_config_render.py \
 		tests/test_output_context.py \
-		tests/test_speech_selection.py
+		tests/test_speech_selection.py \
+		tests/test_session_control.py \
+		tests/test_feedback.py \
+		tests/test_notifications.py
 
 verify-all:
 	$(PYTHON) -m pytest -q tests

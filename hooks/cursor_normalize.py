@@ -226,8 +226,8 @@ def normalize_agent_response(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(text, str):
         text = str(text)
     return {
-        "session_id": payload.get("conversation_id")
-        or payload.get("session_id")
+        "session_id": payload.get("session_id")
+        or payload.get("conversation_id")
         or "default",
         "content": sanitize_spoken_text(text),
         "transcript_path": payload.get("transcript_path") or "",

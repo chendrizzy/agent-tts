@@ -866,7 +866,19 @@ class TTSDaemon:
                 except Exception:
                     pass
 
-            if command == 'tool_event':
+            from daemon import session_control  # stdlib leaf, imported lazily like spoken_log above
+            if command in ('tool_event', 'stop_event') and isinstance(request_data, dict) \
+                    and session_control.is_muted(request_data.get('session_id')):
+                response = {'status': 'ok', 'event_id': request_data.get('event_id'),
+                            'queued': False, 'reason': 'muted'}
+
+            elif command == 'stop_event' and isinstance(request_data, dict) \
+                    and request_data.get('notification_kind') \
+                    and not session_control.allow_notification(request_data['notification_kind']):
+                response = {'status': 'ok', 'event_id': request_data.get('event_id'),
+                            'queued': False, 'reason': 'notification off'}
+
+            elif command == 'tool_event':
                 # Wave 2 W2.A: route tool_event payloads through ContentRouter.
                 # OBSERVE-03: schema validation BEFORE dispatch — malformed
                 # payloads are rejected with a structured `schema_violation`

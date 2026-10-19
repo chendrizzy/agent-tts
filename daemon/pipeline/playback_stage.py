@@ -19,7 +19,7 @@ import platform
 import time
 
 from .generate_stage import AudioSegment
-from .. import spoken_log  # per-session spoken-output log (best-effort; never raises)
+from .. import session_control, spoken_log  # per-session spoken-output log (best-effort; never raises)
 
 if TYPE_CHECKING:
     from ..tts_types import Category
@@ -192,6 +192,9 @@ class PlaybackStage:
                     )
                 except asyncio.TimeoutError:
                     continue
+
+                if session_control.is_muted(session_id):
+                    continue  # muted after this was queued: drop, don't speak
 
                 async with lock:  # Per-session lock only!
                     state.is_playing = True

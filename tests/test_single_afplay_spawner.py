@@ -136,6 +136,11 @@ CENSUS: Dict[Tuple[str, str], dict] = {
         "reason": "launchctl bootout and systemctl disable/daemon-reload, to "
                   "remove the background service",
     },
+    ("session_control.py", "_identify_uncached"): {
+        "audio": False, "calls": 1,
+        "reason": "git rev-parse to identify a session's repo/worktree/branch "
+                  "for voice-override rules; never starts a player",
+    },
     ("tts_daemon.py", "_compute_build_stamp"): {
         "audio": False, "calls": 2,
         "reason": "git rev-parse and git status, for the build stamp",

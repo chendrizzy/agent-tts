@@ -531,6 +531,10 @@ def _in_dict_or_stem(low: str) -> bool:
     return False
 
 
+_CLITIC_RE = re.compile(r"(?:'(?:s|m|re|ve|ll|d)|n't)$")
+_IRREGULAR_NT_STEMS = frozenset({"ca", "wo", "sha"})
+
+
 def _is_real_word(tok: str) -> bool:
     """A word token is REAL if it's in the system dict, in the tech allowlist,
     a regular inflection of one, or a hyphenated compound of real parts.
@@ -543,8 +547,12 @@ def _is_real_word(tok: str) -> bool:
         return True
     if not _SYSTEM_DICT:
         return False
-    # Strip a trailing possessive 's ("daemon's") before stemming.
-    base = low[:-2] if low.endswith("'s") else low
+    # Strip a trailing possessive/contraction clitic ("daemon's", "I'm", "you're",
+    # "we've", "they'll", "I'd", "isn't") before stemming. Irregular n't stems
+    # (can't, won't, shan't) are the dict word minus its tail, so accept them.
+    base = _CLITIC_RE.sub("", low)
+    if base in _IRREGULAR_NT_STEMS and low.endswith("n't"):
+        return True
     if _in_dict_or_stem(base):
         return True
     # Hyphenated compound: real if every part is real ("build-ok", "drop-in").

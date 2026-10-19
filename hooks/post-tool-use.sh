@@ -46,6 +46,14 @@ if ! command -v jq &>/dev/null; then
     exit 0
 fi
 
+# Per-session mute (panel): flag file under the control dir. Name must match
+# daemon.session_control.safe_sid (byte-wise [A-Za-z0-9_-], max 128).
+SID=$(jq -r '.session_id // "default"' <<< "$INPUT" 2>/dev/null)
+if [ -e "${AGENT_TTS_CONTROL_DIR:-$HOME/.claude/tts_control}/muted/$(printf '%s' "${SID:-default}" | LC_ALL=C tr -c 'A-Za-z0-9_-' '_' | cut -c1-128)" ] ; then
+    log "tool_event skipped: session muted"
+    exit 0
+fi
+
 # Defensive readiness check. If the socket is missing or unresponsive, attempt
 # to spin up the daemon via the helper. Degrade gracefully — log and skip the
 # submission rather than failing the hook (we already echoed INPUT above).
