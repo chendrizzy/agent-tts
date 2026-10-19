@@ -457,3 +457,130 @@ def test_voice_rule_writes_do_not_lose_updates(tmp_path):
     [p.start() for p in ps]
     [p.join() for p in ps]
     assert {f"session:s{i}" for i in range(12)} <= set(sc.load_rules())
+
+
+# --- multi-field rules (voices.json v2) ----------------------------------------
+def test_v1_file_reads_unchanged(ctl):
+    ctl.mkdir(parents=True, exist_ok=True)
+    (ctl / "voices.json").write_text(json.dumps({"version": 1, "rules": {
+        "session:s": {"voice": "bm_george", "set_at": 1.0}, "all:*": {"voice": "af_bella", "set_at": 2.0},
+        "session:junk": {"set_at": 3.0}}}))
+    assert sc.load_rules() == {"session:s": {"voice": "bm_george", "set_at": 1.0},
+                               "all:*": {"voice": "af_bella", "set_at": 2.0}}
+    assert sc.override_voice("s", None) == ("bm_george", "session", "s")
+    assert sc.override_voice("x", None) == ("af_bella", "all", "*")
+    sc.set_rule("session", "t", 0.5, "volume")  # any write upgrades the file
+    assert json.loads((ctl / "voices.json").read_text())["version"] == 2
+
+
+def test_fields_fall_through_independently(repo):
+    cwd = str(repo)
+    i = sc.identify(cwd)
+    sc.set_rule("branch", f"{i['project']}@main", 1.5, "volume")
+    sc.set_rule("project", i["project"], "bm_george")
+    sc.set_rule("all", "*", 0.2, "volume")
+    assert sc.resolve_setting("volume", "s", cwd) == (1.5, "branch")
+    assert sc.resolve_setting("voice", "s", cwd) == ("bm_george", "project")
+    assert sc.resolve_setting("rate", "s", cwd) == (None, "default")
+    eff = sc.resolve("s", cwd)["effective"]
+    assert eff == {"voice": {"value": "bm_george", "source": "project"},
+                   "volume": {"value": 1.5, "source": "branch"},
+                   "rate": {"value": None, "source": "default"},
+                   "frequency": {"value": None, "source": "default"},
+                   "verbosity": {"value": None, "source": "default"}}
+    with pytest.raises(ValueError, match="field"):
+        sc.resolve_setting("pitch", "s", cwd)
+
+
+def test_voice_scope_below_workspace_above_all(repo):
+    cwd = str(repo)
+    i = sc.identify(cwd)
+    sc.set_rule("session", "s", "bm_george")
+    sc.set_rule("all", "*", 1, "verbosity")
+    sc.set_rule("voice", "bm_george", 3, "verbosity")
+    sc.set_rule("voice", "af_bella", 5, "verbosity")  # another voice: never matches
+    assert sc.resolve_setting("verbosity", "s", cwd) == (3, "voice")
+    assert sc.resolve_setting("verbosity", "other", cwd) == (1, "all")  # pool voice, no rule for it
+    sc.set_rule("workspace", i["workspace"], 4, "verbosity")
+    assert sc.resolve_setting("verbosity", "s", cwd) == (4, "workspace")
+    # the pool / default voice also keys voice-scope rules
+    sc.set_rule("voice", sc.pool_voice(cwd), 2, "frequency")
+    assert sc.resolve_setting("frequency", "other", cwd) == (2, "voice")
+    assert sc.resolve("other", cwd)["effective"]["frequency"] == {"value": 2, "source": "voice"}
+
+
+def test_voice_scope_cannot_set_voice_and_needs_known_voice():
+    with pytest.raises(ValueError, match="voice-scope"):
+        sc.set_rule("voice", "bm_george", "af_bella")
+    with pytest.raises(ValueError, match="unknown voice"):
+        sc.set_rule("voice", "nobody", 1.0, "rate")
+
+
+def test_voice_scope_voice_field_ignored_on_read(ctl):
+    ctl.mkdir(parents=True, exist_ok=True)
+    (ctl / "voices.json").write_text(json.dumps({"version": 2, "rules": {
+        "voice:bm_george": {"voice": "af_bella", "rate": 1.2}}}))
+    assert sc.load_rules() == {"voice:bm_george": {"rate": 1.2}}
+
+
+def test_field_validation_and_clamping():
+    assert sc.set_rule("session", "s", "9", "volume")["session:s"]["volume"] == 2.0
+    assert sc.set_rule("session", "s", -1, "volume")["session:s"]["volume"] == 0.0
+    assert sc.set_rule("session", "s", "0.1", "rate")["session:s"]["rate"] == 0.5
+    assert sc.set_rule("session", "s", "7", "frequency")["session:s"]["frequency"] == 5
+    assert sc.set_rule("session", "s", 0, "verbosity")["session:s"]["verbosity"] == 1
+    rule = sc.load_rules()["session:s"]
+    assert type(rule["frequency"]) is int and type(rule["volume"]) is float
+    for field, bad in [("frequency", "2.5"), ("volume", "loud"), ("rate", "nan"), ("verbosity", True),
+                       ("volume", None)]:
+        with pytest.raises(ValueError, match=field):
+            sc.set_rule("session", "s", bad, field)
+    with pytest.raises(ValueError, match="field"):
+        sc.set_rule("session", "s", 1, "pitch")
+
+
+def test_invalid_field_ignored_not_whole_rule(ctl):
+    ctl.mkdir(parents=True, exist_ok=True)
+    (ctl / "voices.json").write_text(json.dumps({"version": 2, "rules": {
+        "session:s": {"voice": "bm_george", "volume": "loud", "rate": 9, "frequency": 2.5, "set_at": 1.0},
+        "session:t": {"volume": "loud", "pitch": 3}}}))
+    assert sc.load_rules() == {"session:s": {"voice": "bm_george", "rate": 2.0, "set_at": 1.0}}
+
+
+def test_set_keeps_other_fields_clear_removes_one():
+    sc.set_rule("session", "s", "bm_george")
+    sc.set_rule("session", "s", 0.7, "volume")
+    assert {k: v for k, v in sc.load_rules()["session:s"].items() if k != "set_at"} == {"voice": "bm_george", "volume": 0.7}
+    rules = sc.clear_rule("session", "s", "voice")
+    assert "voice" not in rules["session:s"] and rules["session:s"]["volume"] == 0.7
+    assert sc.override_voice("s", None) is None
+    assert sc.clear_rule("session", "s", "volume") == {}
+
+
+def test_cli_set_rule_clear_rule_round_trip(repo):
+    cwd = str(repo)
+    rc, out = _cli("set-rule", "--scope", "project", "--target", sc.identify(cwd)["project"],
+                   "--field", "volume", "--value", "3")
+    assert rc == 0 and out["rules"][f"project:{sc.identify(cwd)['project']}"]["volume"] == 2.0
+    rc, out = _cli("set-rule", "--scope", "voice", "--target", "bm_george", "--field", "rate", "--value", "1.25")
+    assert rc == 0 and out["rules"]["voice:bm_george"]["rate"] == 1.25
+    rc, out = _cli("snapshot", stdin=json.dumps({"sessions": [{"session_id": "s1", "cwd": cwd}]}))
+    assert out["resolved"]["s1"]["effective"]["volume"] == {"value": 2.0, "source": "project"}
+    assert out["rules"]["voice:bm_george"]["rate"] == 1.25
+    assert _cli("set-rule", "--scope", "voice", "--target", "bm_george", "--field", "voice", "--value", "af_bella")[0] == 2
+    assert _cli("set-rule", "--scope", "session", "--target", "s", "--field", "pitch", "--value", "1")[0] == 2
+    assert _cli("set-rule", "--scope", "session", "--target", "s", "--field", "volume")[0] == 2
+    rc, out = _cli("clear-rule", "--scope", "voice", "--target", "bm_george", "--field", "rate")
+    assert rc == 0 and "voice:bm_george" not in out["rules"]
+    rc, out = _cli("clear-rule", "--scope", "project", "--target", sc.identify(cwd)["project"], "--field", "volume")
+    assert (rc, out) == (0, {"rules": {}})
+
+
+def test_voice_scope_lookup_skips_git_and_config_when_unused(monkeypatch):
+    sc.set_rule("session", "s", 1.1, "rate")
+    sc.set_rule("all", "*", 3, "frequency")
+    monkeypatch.setattr(subprocess, "run", MagicMock(side_effect=AssertionError("git ran")))
+    monkeypatch.setattr(sc, "voices_info", MagicMock(side_effect=AssertionError("config read")))
+    assert sc.resolve_setting("rate", "s", "/some/cwd") == (1.1, "session")
+    assert sc.resolve_setting("frequency", "s", "/some/cwd") == (3, "all")
+    assert sc.override_voice("s", "/some/cwd") is None

@@ -1,4 +1,4 @@
-"""Per-session control layer: mute flags and scoped voice-override rules.
+"""Per-session control layer: mute flags and scoped setting rules.
 
 Stdlib-only leaf. Importable as ``daemon.session_control`` (daemon + hooks) and
 runnable as ``python3 daemon/session_control.py <cmd>`` (the panel's CLI; every
@@ -6,11 +6,15 @@ command prints ONE JSON document on stdout, errors as ``{"error": msg}`` / exit 
 
 State lives under ``paths.control_dir()``:
     muted/<safe_sid>   flag file, content ``{"since": <epoch>}``
-    voices.json        ``{"version": 1, "rules": {"<scope>:<key>": {"voice", "set_at"}}}``
+    voices.json        ``{"version": 2, "rules": {"<scope>:<key>": {<any of FIELDS>, "set_at"}}}``
+                       (version 1 files, voice-only entries, read unchanged)
 
-Rule scopes, narrowest first: session, branch, worktree, project, workspace, all.
+Rule scopes, narrowest first: session, branch, worktree, project, workspace,
+voice (key = the session's resolved voice name), all. Each field resolves on its
+own: the narrowest rule that sets THAT field wins, so a branch volume and a
+project voice both apply. A voice-scope rule may not set the voice itself.
 The daemon calls override_voice() on every event, so it must be cheap and must
-never raise: no git subprocess unless a git-derived-scope rule actually exists.
+never raise: no git subprocess unless a git-derived-scope rule sets the field.
 """
 import sys
 
@@ -22,6 +26,7 @@ import fcntl  # noqa: E402
 import functools  # noqa: E402
 import hashlib  # noqa: E402
 import json  # noqa: E402
+import math  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
 import subprocess  # noqa: E402
@@ -33,7 +38,10 @@ from typing import Optional  # noqa: E402
 
 from daemon import config_io, paths  # noqa: E402
 
-SCOPES = ("session", "branch", "worktree", "project", "workspace", "all")
+SCOPES = ("session", "branch", "worktree", "project", "workspace", "voice", "all")
+# field -> (type, min, max); voice is a catalog name, the rest clamp into range.
+FIELDS = {"voice": (str, None, None), "volume": (float, 0.0, 2.0), "rate": (float, 0.5, 2.0),
+          "frequency": (int, 1, 5), "verbosity": (int, 1, 5)}
 _GIT_SCOPES = ("branch", "worktree", "project", "workspace")
 IDENTIFY_TTL_S = 30.0
 _IDENTIFY_MAX = 512
@@ -130,18 +138,55 @@ def load_rules() -> dict:
             raw = data.get("rules") if isinstance(data, dict) else None
         except (OSError, ValueError):
             raw = None
-        _RULES_CACHE.update(sig=sig, rules={
-            k: v for k, v in (raw if isinstance(raw, dict) else {}).items()
-            if isinstance(v, dict) and isinstance(v.get("voice"), str)
-        })
+        rules = {}
+        for k, v in (raw if isinstance(raw, dict) else {}).items():
+            entry = _clean_entry(k, v)
+            if entry:
+                rules[k] = entry
+        _RULES_CACHE.update(sig=sig, rules=rules)
     return _RULES_CACHE["rules"]
+
+
+def _coerce(field: str, value):
+    """Validated value for ``field`` (numbers clamped into range); ValueError if unusable."""
+    if field not in FIELDS:
+        raise ValueError(f"unknown field: {field!r} (expected one of {', '.join(FIELDS)})")
+    kind, lo, hi = FIELDS[field]
+    if kind is str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field}: expected a voice name, got {value!r}")
+        return value
+    try:
+        x = float(value) if not isinstance(value, bool) else math.nan
+    except (TypeError, ValueError):
+        x = math.nan
+    if not math.isfinite(x) or (kind is int and not x.is_integer()):
+        raise ValueError(f"{field}: expected {'an integer' if kind is int else 'a number'} {lo}-{hi}, got {value!r}")
+    return min(max(kind(x), lo), hi)
+
+
+def _clean_entry(rule_key, entry) -> dict:
+    """The valid fields of one stored rule (+ set_at); invalid fields are skipped, not fatal."""
+    if not isinstance(entry, dict):
+        return {}
+    out = {}
+    for field in FIELDS:
+        if field not in entry or (field == "voice" and str(rule_key).startswith("voice:")):
+            continue
+        try:
+            out[field] = _coerce(field, entry[field])
+        except ValueError:
+            pass
+    if out and isinstance(entry.get("set_at"), (int, float)):
+        out["set_at"] = entry["set_at"]
+    return out
 
 
 def _save_rules(rules: dict) -> None:
     p = _rules_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(f"{p.name}.tmp.{os.getpid()}")
-    tmp.write_text(json.dumps({"version": 1, "rules": rules}, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps({"version": 2, "rules": rules}, indent=2), encoding="utf-8")
     os.replace(tmp, p)
 
 
@@ -155,22 +200,39 @@ def _normalize_key(scope: str, key: str) -> str:
     return key
 
 
-def set_rule(scope: str, key: str, voice: str) -> dict:
+def set_rule(scope: str, key: str, value, field: str = "voice") -> dict:
+    """Set one field of the ``<scope>:<key>`` rule, keeping its other fields."""
     key = _normalize_key(scope, key)
-    if voice not in voices_info()["catalog"]:
-        raise ValueError(f"unknown voice: {voice!r}")
+    value = _coerce(field, value)
+    if scope == "voice" and field == "voice":
+        raise ValueError("a voice-scope rule cannot set the voice field")
+    if field == "voice" or scope == "voice":
+        catalog = voices_info()["catalog"]
+        for v in (value if field == "voice" else None, key if scope == "voice" else None):
+            if v is not None and v not in catalog:
+                raise ValueError(f"unknown voice: {v!r}")
     with locked("voices.lock"):
         rules = dict(load_rules())
-        rules[f"{scope}:{key}"] = {"voice": voice, "set_at": time.time()}
+        rule_key = f"{scope}:{key}"
+        rules[rule_key] = {**{k: v for k, v in rules.get(rule_key, {}).items() if k != "set_at"},
+                           field: value, "set_at": time.time()}
         _save_rules(rules)
     return rules
 
 
-def clear_rule(scope: str, key: str) -> dict:
+def clear_rule(scope: str, key: str, field: Optional[str] = None) -> dict:
+    """Clear one field of a rule (the entry goes with its last field), or the whole rule."""
     key = _normalize_key(scope, key)
+    if field is not None and field not in FIELDS:
+        raise ValueError(f"unknown field: {field!r} (expected one of {', '.join(FIELDS)})")
     with locked("voices.lock"):
         rules = dict(load_rules())
-        rules.pop(f"{scope}:{key}", None)
+        rule_key = f"{scope}:{key}"
+        entry = {k: v for k, v in rules.get(rule_key, {}).items() if k != field}
+        if field is None or not set(entry) & set(FIELDS):
+            rules.pop(rule_key, None)
+        else:
+            rules[rule_key] = entry
         _save_rules(rules)
     return rules
 
@@ -235,7 +297,7 @@ def identify(cwd: str) -> dict:
     return ident
 
 
-def _rule_keys(session_id: str, ident: Optional[dict]) -> list:
+def _rule_keys(session_id: str, ident: Optional[dict], voice: Optional[str] = None) -> list:
     """(scope, key) candidates, narrowest first."""
     keys = [("session", session_id)]
     if ident:
@@ -243,25 +305,52 @@ def _rule_keys(session_id: str, ident: Optional[dict]) -> list:
             keys.append(("branch", f"{ident['project']}@{ident['branch']}"))
         keys += [("worktree", ident["worktree"]), ("project", ident["project"]),
                  ("workspace", ident["workspace"])]
+    if voice:
+        keys.append(("voice", voice))
     keys.append(("all", "*"))
     return keys
 
 
-def override_voice(session_id, cwd):
-    """(voice, scope, key) of the narrowest matching rule, or None. Never raises."""
-    try:
-        rules = load_rules()
-        if not rules:
-            return None
-        need_git = bool(cwd) and any(k.split(":", 1)[0] in _GIT_SCOPES for k in rules)
-        ident = identify(cwd) if need_git else None
-        for scope, key in _rule_keys(session_id, ident):
-            rule = rules.get(f"{scope}:{key}")
-            if rule:
-                return rule["voice"], scope, key
-    except Exception:
-        pass
+def _lookup(field: str, session_id, cwd, voice: Optional[str] = None):
+    """(value, scope, key) of the narrowest rule setting ``field``, or None.
+
+    Git runs only if a git-scope rule sets the field; the session's voice is
+    resolved (or ``voice`` used) only if a voice-scope rule sets it.
+    """
+    rules = load_rules()
+    scopes = {k.split(":", 1)[0] for k, v in rules.items() if field in v}
+    if not scopes:
+        return None
+    ident = identify(cwd) if cwd and scopes & set(_GIT_SCOPES) else None
+    if "voice" in scopes and voice is None:
+        voice = _session_voice(session_id, cwd, voices_info())[0]
+    for scope, key in _rule_keys(session_id, ident, voice if "voice" in scopes else None):
+        rule = rules.get(f"{scope}:{key}")
+        if rule and field in rule:
+            return rule[field], scope, key
     return None
+
+
+def resolve_setting(field: str, session_id, cwd):
+    """(value, source_scope) from the narrowest rule setting ``field``; (None, "default") if none.
+
+    Raises ValueError only for an unknown field; anything else fails soft to the default.
+    """
+    if field not in FIELDS:
+        raise ValueError(f"unknown field: {field!r} (expected one of {', '.join(FIELDS)})")
+    try:
+        hit = _lookup(field, session_id, cwd)
+    except Exception:
+        hit = None
+    return (hit[0], hit[1]) if hit else (None, "default")
+
+
+def override_voice(session_id, cwd):
+    """(voice, scope, key) of the narrowest rule setting the voice, or None. Never raises."""
+    try:
+        return _lookup("voice", session_id, cwd)
+    except Exception:
+        return None
 
 
 # --- config / pool -----------------------------------------------------------
@@ -323,18 +412,30 @@ def pool_voice(cwd, info: Optional[dict] = None) -> Optional[str]:
     return info["pool"][int(hashlib.sha256(proj.encode("utf-8")).hexdigest(), 16) % len(info["pool"])]
 
 
-def resolve(session_id, cwd, info: Optional[dict] = None) -> dict:
-    info = voices_info() if info is None else info
+def _session_voice(session_id, cwd, info: dict) -> tuple:
+    """(voice, source, rule_key): voice rule, else hashed project pool, else config default."""
     hit = override_voice(session_id, cwd)
     if hit:
-        voice, source, rule_key = hit
-    elif (pooled := pool_voice(cwd, info)):
-        voice, source, rule_key = pooled, "project_pool", None
-    else:
-        voice, source, rule_key = info["default_voice"], "default", None
+        return hit
+    if (pooled := pool_voice(cwd, info)):
+        return pooled, "project_pool", None
+    return info["default_voice"], "default", None
+
+
+def resolve(session_id, cwd, info: Optional[dict] = None) -> dict:
+    info = voices_info() if info is None else info
+    voice, source, rule_key = _session_voice(session_id, cwd, info)
+    effective = {"voice": {"value": voice, "source": source}}
+    for field in FIELDS:
+        if field != "voice":
+            try:
+                hit = _lookup(field, session_id, cwd, voice=voice)
+            except Exception:
+                hit = None
+            effective[field] = {"value": hit[0], "source": hit[1]} if hit else {"value": None, "source": "default"}
     return {"session_id": session_id, "voice": voice, "source": source,
             "rule_key": rule_key, "engine": info["engine"], "rate": info["rate"],
-            "volume": info["volume"], "muted": is_muted(session_id)}
+            "volume": info["volume"], "muted": is_muted(session_id), "effective": effective}
 
 
 # --- notification prefs ------------------------------------------------------
@@ -468,7 +569,12 @@ def main(argv: list) -> int:
         elif cmd == "set-voice":
             out = {"rules": set_rule(_flag(args, "--scope"), _flag(args, "--key"), _flag(args, "--voice"))}
         elif cmd == "clear-voice":
-            out = {"rules": clear_rule(_flag(args, "--scope"), _flag(args, "--key"))}
+            out = {"rules": clear_rule(_flag(args, "--scope"), _flag(args, "--key"), "voice")}
+        elif cmd == "set-rule":
+            out = {"rules": set_rule(_flag(args, "--scope"), _flag(args, "--target"),
+                                     _flag(args, "--value"), _flag(args, "--field"))}
+        elif cmd == "clear-rule":
+            out = {"rules": clear_rule(_flag(args, "--scope"), _flag(args, "--target"), _flag(args, "--field"))}
         elif cmd == "identify":
             out = {c: identify(c) for c in args}
         elif cmd == "feedback":
@@ -499,7 +605,7 @@ def main(argv: list) -> int:
                 updates[k] = v
             out = {"prefs": set_notification_prefs(updates) if updates else notification_prefs()}
         else:
-            raise ValueError("usage: session_control.py snapshot|mute|unmute|set-voice|clear-voice|identify|feedback|implicit-pause|tuning|forget|notifications")
+            raise ValueError("usage: session_control.py snapshot|mute|unmute|set-voice|clear-voice|set-rule|clear-rule|identify|feedback|implicit-pause|tuning|forget|notifications")
     except Exception as exc:  # contract: every failure is {"error": ...} + exit 2
         print(json.dumps({"error": str(exc)}))
         return 2

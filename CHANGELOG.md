@@ -11,6 +11,12 @@ All notable changes to claude-tts are documented here. Format follows
   `~/.claude/tts_control/` (`$AGENT_TTS_CONTROL_DIR`), git identity, and a JSON
   CLI. The hooks skip muted sessions; the daemon drops their events and queued
   lines; a voice rule beats the project pool and its concurrency gate.
+- **Multi-field rules** (`voices.json` v2; v1 files read unchanged): a rule holds any of
+  voice, volume (0-2), rate (0.5-2), frequency (1-5) and verbosity (1-5), each resolved
+  on its own down session > branch > worktree > project > workspace > voice > all, where
+  `voice:<name>` targets sessions speaking that voice. `set-rule` / `clear-rule` CLI;
+  the snapshot reports an `effective` map per session. Stored and resolved only so far:
+  playback still uses only the voice.
 - **`daemon/feedback.py`**: ratings of spoken lines (useful, noise, urgent, too
   long) and pauses tune what the router speaks, its priority, and how condensed,
   per project, category and line template, decaying over two weeks.
