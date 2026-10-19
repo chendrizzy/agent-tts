@@ -208,7 +208,7 @@ class PlaybackStage:
                 scoped, _ = await asyncio.to_thread(
                     session_control.resolve_setting, 'volume', session_id,
                     spoken_log.get_session_cwd(session_id))
-                volume = max(0.0, min(2.0, self.volume * (1.0 if scoped is None else scoped)))
+                volume = max(0.0, min(4.0, self.volume * (1.0 if scoped is None else scoped)))  # master may exceed 2 (quiet engines); user-approved 4.0 cap
                 if volume <= 0:
                     continue  # volume 0 is silence: drop like mute
 

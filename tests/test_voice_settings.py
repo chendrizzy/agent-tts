@@ -55,7 +55,7 @@ def test_update_config_sets_one_key(key, value):
 @pytest.mark.parametrize("key,value", [
     ("voice.name", ""), ("voice.name", "nope"), ("voice.name", 3),
     ("voice.rate", 0.4), ("voice.rate", 2.1), ("voice.rate", True), ("voice.rate", "1"),
-    ("voice.volume", -0.1), ("voice.volume", 2.5),
+    ("voice.volume", -0.1), ("voice.volume", 4.5),
     ("project_voices.enabled", "true"),
     ("project_voices.pool", []), ("project_voices.pool", [" "]), ("project_voices.pool", ["a"] * 65),
     ("project_voices.pool", "af_bella"), ("voice.engine", "say"),

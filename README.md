@@ -181,7 +181,7 @@ One global setting. Errors are spoken in every mood.
 
 The level of a spoken line is the master `voice.volume` from your config times the
 scoped `volume` rule (`set-rule --scope project --target T --field volume --value 0.5`;
-`clear-rule --field volume` removes it). Range 0 to 2; 0 silences the scope. macOS applies
+`clear-rule --field volume` removes it). Rules range 0 to 2 and the master 0 to 4; the product is capped at 4. 0 silences the scope. macOS applies
 it with `afplay -v`. Linux players differ: `mpv`, `pw-play` and `paplay` scale (up to 2x),
 `ffplay` can only attenuate (capped at 100%), and `aplay` has no volume option, so it
 plays at system volume.
@@ -190,7 +190,7 @@ plays at system volume.
 
 `config-get` prints the config file the daemon reads (its path, the current voice, rate
 and volume, the project-voice pool, and the voices the engine offers). `config-set --key K --value V`
-edits one of `voice.name`, `voice.rate` (0.5 to 2), `voice.volume` (0 to 2),
+edits one of `voice.name`, `voice.rate` (0.5 to 2), `voice.volume` (0 to 4),
 `project_voices.enabled` (`true`/`false`) or `project_voices.pool` (a JSON array of 1 to 64
 names), rewriting the file atomically with owner-only permissions. A bad value or an
 unparseable file is refused and nothing is written. The daemon reads the config at start,

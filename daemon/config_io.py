@@ -254,7 +254,7 @@ def update_config(key: str, value) -> dict:
         group, field = key.split(".")
     else:
         raise ValueError(f"unknown key: {key!r}")
-    check = {"voice.rate": _number(key, 0.5, 2.0), "voice.volume": _number(key, 0.0, 2.0),
+    check = {"voice.rate": _number(key, 0.5, 2.0), "voice.volume": _number(key, 0.0, 4.0),
              "project_voices.enabled": _enabled, "project_voices.pool": _pool}.get(key)
     with locked("config.lock"):
         src, path = effective_config_path(), active_config_path()  # read what the daemon reads

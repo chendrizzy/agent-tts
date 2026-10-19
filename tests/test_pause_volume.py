@@ -170,7 +170,9 @@ def test_segment_waiting_on_audio_lock_is_dropped_by_pause(monkeypatch, tmp_path
 @pytest.mark.parametrize("master,rule,expect", [
     (1.0, None, 1.0),    # no rule: master only
     (0.5, 1.5, 0.75),    # master x scoped
-    (2.0, 2.0, 2.0),     # clamped into 0..2
+    (2.0, 2.0, 4.0),     # master x rule may exceed 2
+    (3.5, None, 3.5),    # a loud master passes through (quiet engines)
+    (3.0, 2.0, 4.0),     # clamped at the 4.0 cap
     (1.0, 0, None),      # zero drops the segment like mute
 ])
 def test_scoped_volume_resolution(master, rule, expect):
