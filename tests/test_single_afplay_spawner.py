@@ -103,12 +103,6 @@ CENSUS: Dict[Tuple[str, str], dict] = {
         "audio": False, "calls": 1,
         "reason": "`ollama --version`, to probe for the local LLM runtime",
     },
-    ("ollama_integration.py", "_install_macos"): {
-        "audio": False, "calls": 1, "reason": "runs the Ollama installer script",
-    },
-    ("ollama_integration.py", "_install_linux"): {
-        "audio": False, "calls": 1, "reason": "runs the Ollama installer script",
-    },
     ("ollama_integration.py", "start_service"): {
         "audio": False, "calls": 1, "reason": "starts `ollama serve`",
     },

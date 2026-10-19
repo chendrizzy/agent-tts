@@ -28,8 +28,6 @@ token-free by default.
   <img src="docs/media/demo.gif" alt="agent-tts deciding, in real time, what to speak from a Claude Code session: Read/Edit stay quiet; test results, an error, and the final answer are spoken aloud." width="100%">
 </p>
 
-> ▶ **[Watch the ~14s clip with sound](docs/media/demo.mp4)** · **[audio only](docs/media/sample.mp3)** — the exact lines marked SPEAK above, voiced by the default `edge-tts` engine.
-
 The frame above isn't a mockup: it's `tests/fixtures/event_corpus.jsonl` replayed
 through the real classifier (`scripts/demo_gif.py`). The same corpus gates CI, so
 the demo can't drift from what the daemon actually does.
@@ -102,12 +100,15 @@ dependency.
 ## Install
 
 agent-tts installs as a Claude Code plugin (and speaks for Cursor too --
-see below). Once it's added as a marketplace source:
+see below). At the prompt of a Claude Code session:
 
 ```
-/plugin marketplace add chendrizzy/agent-tts
+/plugin install agent-tts --marketplace chendrizzy/agent-tts
 /tts:setup
 ```
+
+(`y` adds the marketplace; on older Claude Code, run
+`/plugin marketplace add chendrizzy/agent-tts` and then `/plugin install agent-tts@agent-tts`.)
 
 `/tts:setup` detects your platform, picks an engine, asks whether voices should
 vary per project or stay shared, asks for balanced/locked/preferred voice gender
@@ -176,6 +177,13 @@ without it. It is sold on Agensi.
   server, or no LLM at all.
 - For an **engine**: `edge-tts` (the `edge` extra, needs internet) or — on
   Apple Silicon — `kokoro` via a separate `mlx-audio` interpreter.
+
+## Network use
+
+- The default `edge-tts` engine sends the spoken text to Microsoft's online TTS service; that is its purpose.
+- Ollama, Voicebox and Kokoro run locally. agent-tts never downloads or runs an installer for them.
+- An OpenAI-compatible backend is contacted only at the `base_url` you configure, using the key from the environment variable you name.
+- No other environment variables or credentials are transmitted.
 
 ## Configuration
 

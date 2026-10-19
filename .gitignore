@@ -28,6 +28,9 @@ logs/
 
 # Demo-generator scratch preview (the committed artifact is docs/media/demo.gif)
 docs/media/_preview.png
+# Generated audio/video demos are not shipped in the plugin payload
+docs/media/sample.mp3
+docs/media/demo.mp4
 
 # Local Claude Code / agent tooling state — never publish
 .claude/

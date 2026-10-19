@@ -62,26 +62,7 @@ ensure_daemon_ready() {
 check_audio_staleness() {
     command -v jq >/dev/null 2>&1 || return 0
     local response
-    response=$("$PYTHON_BIN" -c "
-import os as _os, signal as _signal
-# Wall-clock ceiling, self-enforced. GNU coreutils 'timeout' is absent on stock
-# macOS, where wrapping this invocation in it meant the hook delivered nothing
-# at all. Armed before any work so it bounds file reads too, not just the
-# socket. Exit 75 (EX_TEMPFAIL) marks a ceiling hit.
-_signal.signal(_signal.SIGALRM, lambda *_a: _os._exit(75))
-_signal.setitimer(_signal.ITIMER_REAL, 1.0)
-import socket, json, sys
-try:
-    s = socket.socket(socket.AF_UNIX)
-    s.settimeout(0.5)
-    s.connect('$SOCKET')
-    s.sendall(b'{\"command\":\"health\"}\n')
-    data = s.recv(8192)
-    s.close()
-    print(data.decode('utf-8'))
-except Exception:
-    sys.exit(1)
-" 2>/dev/null) || return 0
+    response=$("$PYTHON_BIN" "$(dirname "${BASH_SOURCE[0]}")/_socket_send.py" health "$SOCKET" 2>/dev/null) || return 0
     [ -n "$response" ] || return 0
     local sec_since_audio
     local sec_since_tool

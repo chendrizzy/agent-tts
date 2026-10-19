@@ -48,6 +48,7 @@ verify:
 		tests/test_platform.py \
 		tests/test_humanize_paths_pipeline.py \
 		tests/test_single_afplay_spawner.py \
+		tests/test_pre_tool_use_parser.py \
 		tests/test_playback_stage_legacy_lock.py \
 		tests/test_cutover_discipline.py \
 		tests/test_suite_is_collectable.py \

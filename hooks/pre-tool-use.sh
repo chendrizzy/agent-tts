@@ -48,6 +48,7 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "default"' 2>/dev/null)
 if [ -e "${AGENT_TTS_CONTROL_DIR:-$HOME/.claude/tts_control}/muted/$(printf '%s' "${SESSION_ID:-default}" | LC_ALL=C tr -c 'A-Za-z0-9_-' '_' | cut -c1-128)" ]; then
     exit 0
 fi
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOCKET_PATH="${CLAUDE_TTS_SOCKET:-${XDG_RUNTIME_DIR:-/tmp}/claude-tts.sock}"
 PYTHON_BIN="${CLAUDE_TTS_PYTHON:-/Library/Frameworks/Python.framework/Versions/3.13/bin/python3}"
 if [ ! -x "$PYTHON_BIN" ]; then
@@ -64,41 +65,8 @@ if [[ "$TOOL_NAME" == "AskUserQuestion" ]]; then
         # ANNOUNCE-01: cap at first sentence OR ≤80 chars, whichever is shorter.
         # A 50-word question produces 15-25 s of speech — far too long for a
         # pre-answer cue. We want a brief "attention ping", not a reading.
-        QUESTION=$("$PYTHON_BIN" -c "
-import re, sys
-q = sys.argv[1]
-# Split on sentence-ending punctuation followed by whitespace or end-of-string.
-parts = re.split(r'(?<=[.?!])\s+', q.strip())
-first_sentence = parts[0] if parts else q
-# Take the shorter of: first sentence, or first 80 chars (with ellipsis if cut).
-if len(first_sentence) <= 80:
-    print(first_sentence)
-else:
-    print(first_sentence[:77].rstrip() + '...')
-" "$QUESTION" 2>/dev/null)
-        "$PYTHON_BIN" -c "
-import os as _os, signal as _signal
-# Wall-clock ceiling, self-enforced. GNU coreutils 'timeout' is absent on stock
-# macOS, where wrapping this invocation in it meant the hook delivered nothing
-# at all. Armed before any work so it bounds file reads too, not just the
-# socket. Exit 75 (EX_TEMPFAIL) marks a ceiling hit.
-_signal.signal(_signal.SIGALRM, lambda *_a: _os._exit(75))
-_signal.setitimer(_signal.ITIMER_REAL, 3)
-import socket, json, sys
-try:
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(2.0)
-    s.connect('$SOCKET_PATH')
-    s.sendall(json.dumps({
-        'command': 'speak',
-        'text': sys.argv[1],
-        'session_id': '$SESSION_ID',
-        'priority': 9,
-        'source': 'pre-tool-use-question',
-    }).encode('utf-8'))
-    s.close()
-except Exception:
-    pass
-" "$QUESTION" 2>/dev/null &
+        QUESTION=$("$PYTHON_BIN" "$HOOK_DIR/_ask_trim.py" "$QUESTION" 2>/dev/null)
+        "$PYTHON_BIN" "$HOOK_DIR/_socket_send.py" speak "$SOCKET_PATH" "$SESSION_ID" 9 pre-tool-use-question "$QUESTION" 2>/dev/null &
     fi
     exit 0
 fi
@@ -112,156 +80,7 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
 # HOOK-03: Runner allowlist + word-boundary + operator stripping.
 # Shell operators must not appear as announcement targets.
 # ANNOUNCE-02: if no allowlist runner matches, exit SILENTLY — no generic fallback.
-ANNOUNCE=$("$PYTHON_BIN" -c "
-import re, sys
-
-cmd = sys.argv[1]
-
-# -----------------------------------------------------------------------
-# Step 1: Strip after first unquoted shell operator so patterns only see
-# the first command in a pipeline/chain. This prevents 'Running pytest on
-# 2>&1' / 'Running tests on null;' false announcements.
-# Split on unquoted: && || ; | > < 2>&1 2> &
-# Simple approach: split on the first occurrence of these operator tokens.
-_OP_RE = re.compile(r'\s*(?:&&|\|\||[|;&]|2>&1|2>|>|<)\s*')
-cmd = _OP_RE.split(cmd, maxsplit=1)[0].strip()
-
-# Strip leading shell preamble: env vars (KEY=val), sudo, exec, etc.
-cmd = re.sub(r'^(?:[A-Z_]+=\S+\s+)+', '', cmd).strip()
-cmd = re.sub(r'^(?:sudo|exec|time)\s+', '', cmd).strip()
-
-if not cmd:
-    sys.exit(0)
-
-# -----------------------------------------------------------------------
-# Deny-list: shell operator tokens must not appear in extracted target.
-# If after stripping we still find operators (e.g., from quoted cmd), bail.
-SHELL_OPS = frozenset(['&&', '||', ';', '|', '>', '<', '2>&1', '2>', '&'])
-
-def is_operator(tok):
-    return tok in SHELL_OPS or tok.startswith('>') or tok.startswith('<')
-
-def short_target(tok):
-    '''Reduce a path or filename to a concise spoken form.'''
-    if not tok or is_operator(tok):
-        return ''
-    # Strip leading ./
-    tok = re.sub(r'^\./', '', tok)
-    # If it is a path, take the basename
-    if '/' in tok:
-        tok = tok.rsplit('/', 1)[-1] or tok
-    # Strip common test extensions
-    tok = re.sub(r'\.(py|js|ts|rs|go|sh|md)$', '', tok)
-    # Strip leading test_ prefix for readability
-    tok = re.sub(r'^test_', '', tok)
-    return tok or ''
-
-def safe_target_from_args(args_str):
-    '''Extract first non-flag, non-operator token from an argument string.
-    Returns empty string if none found or if token is a shell operator.
-    '''
-    for tok in args_str.split():
-        if tok.startswith('-') or '=' in tok and '/' not in tok:
-            continue
-        if is_operator(tok):
-            return ''
-        return short_target(tok)
-    return ''
-
-# -----------------------------------------------------------------------
-# ANNOUNCE-02: Only announce if an allowlisted runner is detected.
-# Order matters: most specific patterns first.
-
-# pytest
-m = re.search(r'\bpytest\b\s*(.*)', cmd)
-if m:
-    args = m.group(1).strip()
-    target = safe_target_from_args(args)
-    if target:
-        # If target looks like a directory (no extension), say 'in <dir>'
-        if '.' not in target.split('/')[-1]:
-            print(f'Running pytest in {target}.')
-        else:
-            print(f'Running pytest on {target}.')
-    else:
-        # No positional args — whole suite
-        print('Running pytest.')
-    sys.exit(0)
-
-# cargo test / cargo build / cargo run / cargo check / cargo clippy
-m = re.search(r'\bcargo\s+(test|build|run|check|clippy)\b(.*)', cmd)
-if m:
-    sub = m.group(1)
-    args = m.group(2).strip()
-    rel = ' release' if '--release' in cmd else ''
-    if sub == 'test':
-        # cargo test <module::path>
-        m2 = re.search(r'\bcargo\s+test\s+([\w:]+)', cmd)
-        if m2:
-            print(f'Running cargo test {m2.group(1)}.')
-        else:
-            print('Running cargo tests.')
-    else:
-        print(f'Cargo {sub}{rel}.')
-    sys.exit(0)
-
-# npm test / npm run <script>
-m = re.search(r'\bnpm\s+test\b(.*)', cmd)
-if m:
-    extra = m.group(1).strip()
-    if '--watch' in extra or '-w' in extra:
-        print('Running npm tests in watch mode.')
-    else:
-        print('Running npm tests.')
-    sys.exit(0)
-m = re.search(r'\bnpm\s+run\s+(\S+)', cmd)
-if m:
-    script = m.group(1)
-    print(f'Running npm script {script}.')
-    sys.exit(0)
-
-# jest / vitest / mocha  (standalone invocations)
-for runner in ('jest', 'vitest', 'mocha'):
-    m = re.search(r'\b' + runner + r'\b\s*(.*)', cmd)
-    if m:
-        args = m.group(1).strip()
-        target = safe_target_from_args(args)
-        if target:
-            print(f'Running {runner} on {target}.')
-        else:
-            print(f'Running {runner}.')
-        sys.exit(0)
-
-# go test
-m = re.search(r'\bgo\s+test\b\s*(.*)', cmd)
-if m:
-    args = m.group(1).strip()
-    m2 = re.search(r'(\.\.\.|\S+)', args)
-    if m2:
-        print(f'Running go test {m2.group(1)}.')
-    else:
-        print('Running go tests.')
-    sys.exit(0)
-
-# make <target>  — only if target looks test-like or is 'test'
-m = re.search(r'\bmake\s+([\w./-]+)', cmd)
-if m:
-    target = m.group(1)
-    # Only announce if target is 'test', 'tests', or contains 'test'
-    if re.search(r'\btest', target, re.IGNORECASE):
-        print(f'Running make {target}.')
-        sys.exit(0)
-    # Non-test make targets: announce only for well-known build targets
-    if target in ('build', 'all', 'install', 'check', 'clean'):
-        print(f'Running make {target}.')
-        sys.exit(0)
-    # Other make targets: silent
-    sys.exit(0)
-
-# ANNOUNCE-02: No allowlist match — exit silently (no generic fallback).
-# Per ANNOUNCE-02: 'Running tests.' generic fallback is REMOVED.
-sys.exit(0)
-" "$COMMAND" 2>/dev/null)
+ANNOUNCE=$("$PYTHON_BIN" "$HOOK_DIR/_parser_logic.py" "$COMMAND" 2>/dev/null)
 
 [[ -z "$ANNOUNCE" ]] && exit 0
 
@@ -269,31 +88,7 @@ sys.exit(0)
 # kept this on the legacy path — see header comment for rationale.
 # (SOCKET_PATH already declared at top.)
 if [[ -S "$SOCKET_PATH" && -x "$PYTHON_BIN" ]]; then
-    "$PYTHON_BIN" -c "
-import os as _os, signal as _signal
-# Wall-clock ceiling, self-enforced. GNU coreutils 'timeout' is absent on stock
-# macOS, where wrapping this invocation in it meant the hook delivered nothing
-# at all. Armed before any work so it bounds file reads too, not just the
-# socket. Exit 75 (EX_TEMPFAIL) marks a ceiling hit.
-_signal.signal(_signal.SIGALRM, lambda *_a: _os._exit(75))
-_signal.setitimer(_signal.ITIMER_REAL, 3)
-import socket, json, sys
-try:
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(2.0)
-    s.connect('$SOCKET_PATH')
-    payload = json.dumps({
-        'command': 'speak',
-        'text': sys.argv[1],
-        'session_id': '$SESSION_ID',
-        'priority': 7,
-        'source': 'pre-tool-use',
-    })
-    s.sendall(payload.encode('utf-8'))
-    s.close()
-except Exception:
-    pass
-" "$ANNOUNCE" 2>/dev/null &
+    "$PYTHON_BIN" "$HOOK_DIR/_socket_send.py" speak "$SOCKET_PATH" "$SESSION_ID" 7 pre-tool-use "$ANNOUNCE" 2>/dev/null &
 fi
 
 exit 0

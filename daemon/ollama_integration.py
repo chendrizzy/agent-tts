@@ -7,7 +7,7 @@ Core interface for managing Ollama local LLM processing with automatic
 installation, model management, and intelligent resource optimization.
 
 Features:
-- Automatic Ollama installation and setup
+- Ollama service setup (installation is left to the user)
 - Dynamic model selection based on system resources
 - Model downloading with progress tracking
 - Health monitoring and connection management
@@ -143,71 +143,14 @@ class OllamaInstaller:
             return False
 
     def install(self) -> bool:
-        """Install Ollama automatically"""
+        """Never downloads or runs an installer; reports how to install Ollama."""
         if self.is_installed():
             self.logger.info("Ollama already installed")
             return True
-
-        try:
-            system = platform.system().lower()
-            if system == "darwin":  # macOS
-                return self._install_macos()
-            elif system == "linux":
-                return self._install_linux()
-            else:
-                self.logger.error(f"Unsupported platform: {system}")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"Installation failed: {e}")
-            return False
-
-    def _install_macos(self) -> bool:
-        """Install Ollama on macOS"""
-        try:
-            # Download and run the official installer
-            self.logger.info("Downloading Ollama installer for macOS...")
-
-            install_script = """
-            curl -fsSL https://ollama.com/install.sh | sh
-            """
-
-            result = subprocess.run(install_script, shell=True,
-                                  capture_output=True, text=True, timeout=300)
-
-            if result.returncode == 0:
-                self.logger.info("Ollama installed successfully")
-                return self._verify_installation()
-            else:
-                self.logger.error(f"Installation failed: {result.stderr}")
-                return False
-
-        except subprocess.TimeoutExpired:
-            self.logger.error("Installation timed out")
-            return False
-
-    def _install_linux(self) -> bool:
-        """Install Ollama on Linux"""
-        try:
-            self.logger.info("Installing Ollama on Linux...")
-
-            install_script = """
-            curl -fsSL https://ollama.com/install.sh | sh
-            """
-
-            result = subprocess.run(install_script, shell=True,
-                                  capture_output=True, text=True, timeout=300)
-
-            if result.returncode == 0:
-                self.logger.info("Ollama installed successfully")
-                return self._verify_installation()
-            else:
-                self.logger.error(f"Installation failed: {result.stderr}")
-                return False
-
-        except subprocess.TimeoutExpired:
-            self.logger.error("Installation timed out")
-            return False
+        self.logger.error(
+            "Ollama is not installed. Install it from https://ollama.com/download "
+            "(macOS: brew install ollama), then retry.")
+        return False
 
     def _verify_installation(self) -> bool:
         """Verify Ollama installation"""
@@ -353,9 +296,9 @@ class OllamaClient:
         try:
             # Check if Ollama is installed
             if not self.installer.is_installed():
-                self.logger.info("Ollama not found, installing...")
+                self.logger.info("Ollama not found")
                 if not self.installer.install():
-                    self.logger.error("Failed to install Ollama")
+                    self.logger.error("Ollama unavailable; install it from https://ollama.com/download")
                     return False
 
             # Start Ollama service if not running
@@ -589,7 +532,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Ollama Integration for Claude Code TTS")
-    parser.add_argument("--install", action="store_true", help="Install Ollama")
+    parser.add_argument("--install", action="store_true", help="Check for Ollama (prints install instructions; never installs)")
     parser.add_argument("--test", action="store_true", help="Test Ollama integration")
     parser.add_argument("--health", action="store_true", help="Check health status")
     parser.add_argument("--models", action="store_true", help="List model information")
@@ -610,9 +553,9 @@ def main():
 
     try:
         if args.install:
-            print("Installing Ollama...")
+            print("Checking for Ollama...")
             success = client.installer.install()
-            print(f"Installation {'successful' if success else 'failed'}")
+            print(f"Ollama {'found' if success else 'not installed'}")
             return
 
         if args.health:

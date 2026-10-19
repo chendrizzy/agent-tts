@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\""
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/speech_output_hook.sh"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/speech_output_hook.sh\""
           }
         ]
       }
@@ -28,18 +28,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/speech_output_hook.sh"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/speech_output_hook.sh\""
           }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|Bash|Task|WebFetch",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use.sh"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use.sh\""
           }
         ]
       }
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.sh"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.sh\""
           }
         ]
       }

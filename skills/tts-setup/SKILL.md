@@ -28,7 +28,7 @@ user session is present.
 
 ## Step 2 — Ensure uv + environment
 
-If `command -v uv` fails, install it: `curl -LsSf https://astral.sh/uv/install.sh | sh`.
+If `command -v uv` fails, stop and ask the user to install it themselves (macOS: `brew install uv`; other platforms: https://docs.astral.sh/uv/getting-started/installation/), then re-check `command -v uv` before continuing.
 Then create the env and install deps from `ROOT`: `uv sync --extra edge` (this
 project is a uv-managed application — its dependencies live in `pyproject.toml`
 and the default `edge-tts` engine is the `edge` extra; there is no

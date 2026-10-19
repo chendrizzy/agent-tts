@@ -7,7 +7,7 @@ edge-tts (the default engine) so the sample matches an out-of-the-box install.
 
     uv run --with pillow python scripts/demo_audio.py    # pillow: demo_gif imports it
 
-Output: docs/media/sample.mp3
+Output: docs/media/sample.mp3 (gitignored; not shipped with the plugin)
 """
 from __future__ import annotations
 

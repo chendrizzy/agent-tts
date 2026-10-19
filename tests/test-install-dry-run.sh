@@ -95,6 +95,11 @@ EXEC_SCRIPTS=(
     "hooks/post-tool-use.sh"
     "hooks/pre-tool-use.sh"
     "hooks/speech_output_hook.sh"
+    "hooks/_socket_send.py"
+    "hooks/_parser_logic.py"
+    "hooks/_ask_trim.py"
+    "hooks/_stop_event.py"
+    "hooks/_cursor_stop_event.py"
     "scripts/sweep_tts_logs.sh"
 )
 

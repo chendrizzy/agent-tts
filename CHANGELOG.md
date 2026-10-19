@@ -20,6 +20,19 @@ All notable changes to claude-tts are documented here. Format follows
 - The control panel built on these (`/tts-panel` and a Cursor canvas) is the
   separate, paid **agent-tts manager**; agent-tts works fully without it.
 
+### Changed (submission readiness)
+- Removed the unused Ollama auto-installer (`curl | sh`, only reachable from the
+  `python -m daemon.ollama_integration` developer CLI) and the `curl | sh` uv
+  bootstrap in the tts-setup skill; the skill now asks the user to install uv.
+- Hook Python moved out of inline `python -c` blocks into `hooks/_socket_send.py`,
+  `_parser_logic.py`, `_ask_trim.py` and `_stop_event.py`. The socket path and
+  session id are now passed as arguments instead of being spliced into Python
+  source. Behaviour, timeouts and error handling are unchanged.
+- The PreToolUse matcher is `Bash` only (the hook ignored every other tool).
+- Removed `docs/media/demo.mp4` and `sample.mp3` from the repo (README-only
+  media; the generator script still writes them, now gitignored).
+- Added `.claude-plugin/icon.png` and a README "Network use" section.
+
 ### Fixed
 - A line made only of contractions ("I'm you're we've they'll") was judged
   gibberish and silently not spoken.
