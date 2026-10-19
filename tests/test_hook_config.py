@@ -36,6 +36,7 @@ def test_no_references_to_deleted_scripts():
             for entry in matcher.get("hooks", []):
                 cmd = entry.get("command", "")
                 if "/hooks/" in cmd:
-                    script_name = cmd.rsplit("/hooks/", 1)[-1].split()[0]
+                    # Paths are quoted ("${CLAUDE_PLUGIN_ROOT}/hooks/x.sh") so a space in the root survives.
+                    script_name = cmd.rsplit("/hooks/", 1)[-1].split()[0].strip('"\'')
                     script_path = HOOKS_DIR / script_name
                     assert script_path.exists(), f"Missing: {script_path}"

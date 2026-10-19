@@ -38,6 +38,7 @@ verify:
 		tests/test_content_router.py \
 		tests/test_subagent_speech_gate.py \
 		tests/test_hook_portability.py \
+		tests/test_hook_config.py \
 		tests/test_voicebox_client.py \
 		tests/test_cache_cleanup.py \
 		tests/test_disk_guard.py \
