@@ -158,7 +158,7 @@ def _coerce(field: str, value):
         return value
     try:
         x = float(value) if not isinstance(value, bool) else math.nan
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # a 400-digit int must not break every command
         x = math.nan
     if not math.isfinite(x) or (kind is int and not x.is_integer()):
         raise ValueError(f"{field}: expected {'an integer' if kind is int else 'a number'} {lo}-{hi}, got {value!r}")

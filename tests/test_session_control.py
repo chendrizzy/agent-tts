@@ -543,8 +543,9 @@ def test_invalid_field_ignored_not_whole_rule(ctl):
     ctl.mkdir(parents=True, exist_ok=True)
     (ctl / "voices.json").write_text(json.dumps({"version": 2, "rules": {
         "session:s": {"voice": "bm_george", "volume": "loud", "rate": 9, "frequency": 2.5, "set_at": 1.0},
-        "session:t": {"volume": "loud", "pitch": 3}}}))
-    assert sc.load_rules() == {"session:s": {"voice": "bm_george", "rate": 2.0, "set_at": 1.0}}
+        "session:t": {"volume": "loud", "pitch": 3},
+        "session:u": {"voice": "bm_george", "volume": 10 ** 400}}}))
+    assert sc.load_rules() == {"session:s": {"voice": "bm_george", "rate": 2.0, "set_at": 1.0}, "session:u": {"voice": "bm_george"}}
 
 
 def test_set_keeps_other_fields_clear_removes_one():
