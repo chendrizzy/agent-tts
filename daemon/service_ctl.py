@@ -229,7 +229,15 @@ def run(action: str) -> dict:
     if action == "start":
         _start(svc, t0)
     elif action == "stop":
-        _stop(svc, t0, stay=True)
+        try:
+            _stop(svc, t0, stay=True)
+        except Failed:  # still running: undo stay-down, or its next crash would look like a Kill
+            _stay_down_path().unlink(missing_ok=True)
+            if svc["manager"] == "launchd":
+                _run(["launchctl", "enable", _gui(svc)])
+            elif svc["manager"] == "systemd":
+                _run(["systemctl", "--user", "enable", UNIT])
+            raise
     elif action == "restart":
         _restart(svc, t0)
     return status(svc)

@@ -196,9 +196,12 @@ def test_unmanaged_sequences(env, monkeypatch):
 
 def test_stop_failure_exits_1(env, monkeypatch, capsys):
     _launchd(env, monkeypatch)
-    Fake(monkeypatch, up=True)  # bootout does not take it down
+    f = Fake(monkeypatch, up=True)  # bootout does not take it down
     assert sc.main(["daemon-stop"]) == 1
     assert capsys.readouterr().err.strip() == "daemon still answering on the socket after stop"
+    gui = f"gui/{UID}/com.x.tts"
+    assert not (sv.paths.control_dir() / "stay_down").exists()  # a failed Kill does not leave it flagged down
+    assert ["launchctl", "enable", gui] == f.calls[-1]  # ...nor disabled at the next login
 
 
 def test_status_shape(env, monkeypatch, capsys):
