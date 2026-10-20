@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_WPM = 175
 
 
+SYNTH_TIMEOUT_S = 30  # per chunk; say renders a sentence in well under a second
+
 class SystemTTSEngine(TTSEngine):
     """TTSEngine backed by the OS speech binary (say/espeak). No deps, no network."""
 
@@ -71,7 +73,13 @@ class SystemTTSEngine(TTSEngine):
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            rc = await proc.wait()
+            try:
+                rc = await asyncio.wait_for(proc.wait(), SYNTH_TIMEOUT_S)
+            except asyncio.TimeoutError:  # a wedged say/espeak must not stall the pipeline forever
+                proc.kill()
+                await proc.wait()
+                logger.error("system TTS synth timed out after %ss", SYNTH_TIMEOUT_S)
+                return False
         except Exception as exc:  # noqa: BLE001 — match EdgeTTSEngine: never raise into the pipeline
             logger.error("system TTS synth failed: %s", exc)
             return False

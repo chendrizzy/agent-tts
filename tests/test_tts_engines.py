@@ -1,5 +1,6 @@
 """Unit tests for the TTSEngine synthesis seam."""
 import asyncio
+import time
 import subprocess
 import sys
 from pathlib import Path
@@ -265,3 +266,14 @@ def test_system_real_say_writes_afplay_openable_wav(tmp_path):
     rc = subprocess.run(["afinfo", str(out)],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
     assert rc == 0
+
+
+def test_system_synth_kills_a_wedged_binary(tmp_path, monkeypatch):
+    # Live: a hung `say` stalled a test run for 10 h; in the daemon it would stall synthesis.
+    import daemon.engines.system_tts_engine as ste
+    monkeypatch.setattr(ste, "SYNTH_TIMEOUT_S", 0.2)
+    e = SystemTTSEngine()
+    monkeypatch.setattr(e, "_build_cmd", lambda text, out, speed: ["sleep", "30"])
+    t0 = time.monotonic()
+    assert asyncio.run(e.synthesize("x", str(tmp_path / "o.wav"), "", 1.0)) is False
+    assert time.monotonic() - t0 < 5
