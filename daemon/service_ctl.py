@@ -183,6 +183,11 @@ def _stop(svc: dict, t0: float, stay: bool, grace: float = 5, limit: Optional[fl
                 os.kill(pid, signal.SIGTERM)
     if not _wait(False, t0, limit=limit):
         raise Failed("daemon still answering on the socket after stop")
+    if svc["manager"] == "launchd":  # bootout returns before launchd drops the job; Boot must not see it
+        while _loaded(svc):
+            if time.monotonic() >= t0 + BUDGET_S:
+                raise Failed("launchd still has the job loaded after stop")
+            time.sleep(0.25)
 
 
 def _start(svc: dict, t0: float) -> None:

@@ -55,6 +55,8 @@ class Fake:
         key = next((k for k in self.on if k in " ".join(argv)), None)
         if key:
             self.up = self.on[key]
+        if "bootout" in argv:
+            self.loaded = False
         if argv[:2] == ["launchctl", "print"]:
             return (0 if self.loaded else 113), "", ""
         return 0, "", ""
@@ -106,7 +108,7 @@ def test_launchd_kill_boot_restart(env, monkeypatch):
     gui = f"gui/{UID}/com.x.tts"
     f = Fake(monkeypatch, up=True, on={"bootout": False})
     out = sv.run("stop")
-    assert f.calls == [["launchctl", "bootout", gui], ["launchctl", "disable", gui]]
+    assert f.calls == [["launchctl", "bootout", gui], ["launchctl", "disable", gui], ["launchctl", "print", gui]]
     assert out["running"] is False and out["stay_down"] is True and out["manager"] == "launchd"
 
     f = Fake(monkeypatch, up=False, on={"kickstart": True})
@@ -228,3 +230,22 @@ def test_session_start_honors_stay_down(tmp_path):
     r = subprocess.run(["bash", str(ROOT / "hooks" / "session-start.sh")], env=env, capture_output=True, text=True)
     assert r.returncode == 0 and "stay_down" in r.stderr
     assert not log.exists(), log.read_text()
+
+
+def test_launchd_kill_waits_until_the_job_is_unloaded(env, monkeypatch):
+    # Live: bootout returned while launchd still listed the job, so an immediate Boot skipped
+    # bootstrap, kickstarted a dying job, and the daemon never came back.
+    _launchd(env, monkeypatch)
+    f = Fake(monkeypatch, up=True, on={"bootout": False})
+    prints = {"n": 0}
+    run = f.run
+
+    def lagging(argv):
+        if argv[:2] == ["launchctl", "print"]:
+            prints["n"] += 1
+            return (0 if prints["n"] < 3 else 113), "", ""  # still listed for two polls
+        return run(argv)
+
+    monkeypatch.setattr(sv, "_run", lagging)
+    sv.run("stop")
+    assert prints["n"] == 3
