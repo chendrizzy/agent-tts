@@ -224,7 +224,7 @@ without it. It is sold on Agensi.
 ## Network use
 
 - The default `edge-tts` engine sends the spoken text to Microsoft's online TTS service; that is its purpose.
-- Ollama, Voicebox and Kokoro run locally. agent-tts never downloads or runs an installer for them.
+- Ollama, Voicebox and Kokoro run locally. agent-tts never installs them for you; you set them up yourself.
 - An OpenAI-compatible backend is contacted only at the `base_url` you configure, using the key from the environment variable you name.
 - No other environment variables or credentials are transmitted.
 
