@@ -119,9 +119,9 @@ idempotent; `/tts:doctor` re-checks health anytime.
 <details>
 <summary><b>Manual setup</b> (development, or running without the plugin)</summary>
 
+From a checkout of this repository:
+
 ```bash
-git clone https://github.com/chendrizzy/agent-tts
-cd agent-tts
 uv sync --extra edge          # base deps + the edge-tts engine
 cp config.example.json ~/.config/claude-tts/config.json   # edit to taste
 ```
