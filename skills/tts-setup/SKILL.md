@@ -1,6 +1,6 @@
 ---
 name: tts-setup
-description: Use for first-run setup of the claude-tts plugin — bootstraps the engine, LLM backend, OS service, and config on a fresh machine. Invoked by /tts:setup.
+description: Use for first-run setup of the agent-tts plugin — bootstraps the engine, LLM backend, OS service, and config on a fresh machine. Invoked by /tts:setup.
 ---
 
 # claude-tts — First-Run Setup

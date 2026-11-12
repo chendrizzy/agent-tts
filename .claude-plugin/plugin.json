@@ -1,11 +1,16 @@
 {
   "name": "agent-tts",
+  "displayName": "Agent TTS",
   "description": "Speak Claude Code progress aloud \u2014 local TTS daemon with smart content routing, hooks, and graceful degradation.",
   "version": "0.1.12",
   "author": {
     "name": "chendrizzy",
     "url": "https://github.com/chendrizzy"
   },
+  "homepage": "https://github.com/chendrizzy/agent-tts",
+  "repository": "https://github.com/chendrizzy/agent-tts",
+  "supportUrl": "https://github.com/chendrizzy/agent-tts/issues",
+  "documentationUrl": "https://github.com/chendrizzy/agent-tts#readme",
   "license": "MIT",
   "keywords": [
     "tts",
