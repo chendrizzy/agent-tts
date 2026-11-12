@@ -9,8 +9,6 @@
   },
   "homepage": "https://github.com/chendrizzy/agent-tts",
   "repository": "https://github.com/chendrizzy/agent-tts",
-  "supportUrl": "https://github.com/chendrizzy/agent-tts/issues",
-  "documentationUrl": "https://github.com/chendrizzy/agent-tts#readme",
   "license": "MIT",
   "keywords": [
     "tts",
