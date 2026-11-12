@@ -1,8 +1,7 @@
 # Changelog
 
 All notable changes to claude-tts are documented here. Format follows
-[Keep a Changelog](https://keepachangelog.com/); this project uses
-[Semantic Versioning](https://semver.org/).
+Keep a Changelog; this project uses Semantic Versioning.
 
 ## [Unreleased]
 
@@ -50,7 +49,7 @@ All notable changes to claude-tts are documented here. Format follows
 - The PreToolUse matcher is `Bash` only (the hook ignored every other tool).
 - Removed `docs/media/demo.mp4` and `sample.mp3` from the repo (README-only
   media; the generator script still writes them, now gitignored).
-- Added `.claude-plugin/icon.png` and a README "Network use" section.
+- Added a plugin icon and a README "Network use" section.
 
 ### Fixed
 - A line made only of contractions ("I'm you're we've they'll") was judged

@@ -26,7 +26,7 @@ logs/
 # OS cruft
 .DS_Store
 
-# Demo-generator scratch preview (the committed artifact is docs/media/demo.gif)
+# Demo-generator scratch preview (not committed)
 docs/media/_preview.png
 # Generated audio/video demos are not shipped in the plugin payload
 docs/media/sample.mp3
