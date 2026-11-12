@@ -34,7 +34,7 @@ if [ -e "${AGENT_TTS_CONTROL_DIR:-$HOME/.claude/tts_control}/muted/$(printf '%s'
 fi
 
 if [ ! -S "$SOCKET" ] || ! /usr/bin/pgrep -f "python.*tts_daemon.py" > /dev/null 2>&1; then
-    source "$PLUGIN_ROOT/hooks/ensure-daemon-ready.sh" 2>>"$LOG_FILE" || true
+    source "$PLUGIN_ROOT/hooks/ensure-daemon-ready.sh" 2>> "$LOG_FILE" || true
     if [ ! -S "$SOCKET" ]; then
         log "WARN: daemon unavailable — skipping stop_event"
         exit 0
@@ -45,7 +45,7 @@ NORMALIZED=$("$PYTHON_BIN" "$PLUGIN_ROOT/hooks/cursor_normalize.py" agent_respon
 [ -n "$NORMALIZED" ] || exit 0
 
 (
-    printf '%s' "$NORMALIZED" | "$PYTHON_BIN" "$PLUGIN_ROOT/hooks/_cursor_stop_event.py" "$SOCKET" 2>>"$LOG_FILE"
+    printf '%s' "$NORMALIZED" | "$PYTHON_BIN" "$PLUGIN_ROOT/hooks/_cursor_stop_event.py" "$SOCKET" 2>> "$LOG_FILE"
 ) &
 
 log "stop_event dispatch STARTED (async; the child logs the outcome)"

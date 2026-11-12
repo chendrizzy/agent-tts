@@ -82,7 +82,7 @@ fi
         '. + {command: $cmd, phase: $phase, event_id: $eid, ts: $ts}' \
         <<< "$INPUT" 2>/dev/null)
     if [ -n "$PAYLOAD" ]; then
-        "$PYTHON_BIN" "$PLUGIN_ROOT/hooks/_socket_send.py" raw "$SOCKET" "$PAYLOAD" 2>>"$LOG_FILE"
+        "$PYTHON_BIN" "$PLUGIN_ROOT/hooks/_socket_send.py" raw "$SOCKET" "$PAYLOAD" 2>> "$LOG_FILE"
     else
         log "ERROR: failed to assemble tool_event payload"
     fi

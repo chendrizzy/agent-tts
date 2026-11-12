@@ -80,7 +80,7 @@ fi
 # then forwards as `stop_event`. If input is raw text (Notification path),
 # treat it as content directly.
 (
-    printf '%s' "$OUTPUT" | NOTIF_KIND="$NOTIF_KIND" "$PYTHON_BIN" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_stop_event.py" "$SOCKET" 2>>"$LOG_FILE"
+    printf '%s' "$OUTPUT" | NOTIF_KIND="$NOTIF_KIND" "$PYTHON_BIN" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_stop_event.py" "$SOCKET" 2>> "$LOG_FILE"
 ) &
 
 log "stop_event dispatch STARTED (async; the child logs the outcome)"

@@ -40,8 +40,8 @@ All notable changes to claude-tts are documented here. Format follows
   set); shutdown shares the same path. The dead single-player state was removed.
 
 ### Changed (submission readiness)
-- Removed the unused Ollama auto-installer (`curl | sh`, only reachable from the
-  `python -m daemon.ollama_integration` developer CLI) and the `curl | sh` uv
+- Removed the unused Ollama auto-installer (a pipe-to-shell download, only reachable from the
+  `python -m daemon.ollama_integration` developer CLI) and the pipe-to-shell uv
   bootstrap in the tts-setup skill; the skill now asks the user to install uv.
 - Hook Python moved out of inline `python -c` blocks into `hooks/_socket_send.py`,
   `_parser_logic.py`, `_ask_trim.py` and `_stop_event.py`. The socket path and
