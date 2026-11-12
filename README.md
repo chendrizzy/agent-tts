@@ -5,6 +5,8 @@
 [![python: 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 [![local-first](https://img.shields.io/badge/local--first-token--free-success.svg)](#no-llm-fallback)
 
+[Privacy](https://github.com/chendrizzy/agent-tts#privacy)
+
 > [!IMPORTANT]
 > **If you installed v0.1.10 or earlier on macOS and heard nothing, upgrade to
 > v0.1.11 — that was a bug, not your setup.** Every hook wrapped its inline
@@ -221,7 +223,19 @@ without it. It is sold on Agensi.
 - For an **engine**: `edge-tts` (the `edge` extra, needs internet) or — on
   Apple Silicon — `kokoro` via a separate `mlx-audio` interpreter.
 
-## Network use
+## Privacy
+
+agent-tts has no server of its own and collects no telemetry. What it keeps
+stays on your machine:
+
+- It reads the session transcript and tool output that Claude Code hands its
+  hooks, to decide what to speak.
+- It writes local files only: spoken lines (`~/.claude/logs/tts/spoken/`, the
+  newest 500 per session), daemon and hook logs (`~/.claude/logs/`), its config
+  (`~/.config/claude-tts/`) and control state (`~/.claude/tts_control/`).
+  Delete them anytime; `/tts:uninstall` removes the service.
+
+What leaves the machine:
 
 - The default `edge-tts` engine sends the spoken text to Microsoft's online TTS service; that is its purpose.
 - Ollama, Voicebox and Kokoro run locally. agent-tts never installs them for you; you set them up yourself.
